@@ -13,11 +13,15 @@ def _tif(path, count, dtype, desc=None):
 
 @pytest.fixture
 def folder(tmp_path):
-    _tif(tmp_path / "Orthomosaic.tif", 5, "float32")
-    _tif(tmp_path / "NDRE.tif", 1, "float32")
+    _tif(tmp_path / "Orthomosaic.data.tif", 5, "float32")
+    _tif(tmp_path / "Orthomosaic.rgb.tif", 4, "uint8")
+    _tif(tmp_path / "NDRE.data.tif", 1, "float32")
+    _tif(tmp_path / "NDRE.rgb.tif", 4, "uint8")
+    (tmp_path / "NDRE.legend.png").write_bytes(b"png-palsu")
     _tif(tmp_path / "NIR.tif", 1, "float32")
     _tif(tmp_path / "RedEdge.tif", 1, "float32")
-    _tif(tmp_path / "Surface model.tif", 1, "float32")
+    _tif(tmp_path / "Surface model.data.tif", 1, "float32")
+    (tmp_path / "Surface model.legend.png").write_bytes(b"png-palsu")
     (tmp_path / "catatan.txt").write_text("bukan raster")
     return tmp_path
 
@@ -25,7 +29,12 @@ def test_klasifikasi_lengkap(folder):
     hasil = layer_scan.scan_folder(folder)
     assert set(hasil["layers"]) == {"ortho", "ndre", "nir", "rededge", "dsm"}
     assert hasil["layers"]["ortho"]["bands"] == 5
+    assert hasil["layers"]["ndre"]["rgb"].endswith("NDRE.rgb.tif")
+    assert hasil["layers"]["ndre"]["legend"].endswith("NDRE.legend.png")
+    assert hasil["layers"]["dsm"]["legend"].endswith("Surface model.legend.png")
+    assert hasil["layers"]["nir"]["rgb"] is None and hasil["layers"]["nir"]["legend"] is None
     assert any("catatan.txt" in d["file"] for d in hasil["ditolak"])
+    assert not any(".rgb.tif" in d["file"] or ".legend.png" in d["file"] for d in hasil["ditolak"])
 
 def test_file_satu_band_asing_ditolak(tmp_path):
     _tif(tmp_path / "aneh.tif", 1, "float32")

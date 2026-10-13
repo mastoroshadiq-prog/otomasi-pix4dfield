@@ -23,7 +23,11 @@ def crop_layer(src_path, geom_wkt, dst_path):
                        transform=ds.window_transform(win), tiled=True,
                        blockxsize=256, blockysize=256, BIGTIFF="YES", num_threads="ALL_CPUS")
         float32 = np.issubdtype(np.dtype(ds.dtypes[0]), np.floating)
-        profile.update(compress="DEFLATE", **(dict(predictor=3) if float32 else {}))
+        profile.pop("predictor", None)
+        if float32:
+            profile.update(compress="DEFLATE", predictor=3)
+        else:
+            profile.update(compress="JPEG", JPEG_QUALITY=85)
         nodata = ds.nodata if ds.nodata is not None else (0.0 if float32 else 0)
         profile["nodata"] = nodata
         Path(dst_path).parent.mkdir(parents=True, exist_ok=True)
@@ -37,21 +41,32 @@ def crop_layer(src_path, geom_wkt, dst_path):
                                      transform=ds.window_transform(winr), invert=True)
                 arr = np.where(mask[None, ...], arr, nodata)
                 out.write(arr, window=Window(0, row, int(win.width), h))
+        if min(int(win.width), int(win.height)) >= 256:
+            with rasterio.open(dst_path, "r+") as ds2:
+                ds2.build_overviews([2, 4, 8, 16], Resampling.average)
     return {"piksel": total, "ukuran": Path(dst_path).stat().st_size}
 
 
 def proses_baris(row, folder_palet):
-    """Satu baris rencana output: crop data → render rgb → legend."""
+    """Satu baris rencana output: crop data → rgb (crop app / render palet) → legend."""
     from core import palet
     stat = crop_layer(row["src_data"], row["geom"], row["dst_data"])
     if row.get("dst_rgb"):
-        if row["layer"] == "ortho":
+        if row.get("src_rgb"):
+            crop_layer(row["src_rgb"], row["geom"], row["dst_rgb"])
+        elif row["layer"] == "ortho":
             render_ortho_rgb(row["dst_data"], row["dst_rgb"])
         else:
             pal = palet.palet_untuk_data(palet.muat_palet(row["layer"], folder_palet), row["dst_data"])
             render_rgb(row["dst_data"], row["dst_rgb"], pal)
-            if row.get("dst_legend"):
-                palet.make_legend(pal, row["dst_legend"], satuan=row["layer"].upper())
+    if row.get("dst_legend"):
+        if row.get("src_legend"):
+            import shutil
+            Path(row["dst_legend"]).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(row["src_legend"], row["dst_legend"])
+        elif not row.get("src_rgb"):
+            pal = palet.palet_untuk_data(palet.muat_palet(row["layer"], folder_palet), row["dst_data"])
+            palet.make_legend(pal, row["dst_legend"], satuan=row["layer"].upper())
     return stat
 
 

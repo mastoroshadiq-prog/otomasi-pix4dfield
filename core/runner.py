@@ -13,6 +13,8 @@ class Item:
     dst_data: str
     dst_rgb: str | None
     dst_legend: str | None
+    src_rgb: str | None = None
+    src_legend: str | None = None
     nama_base: str = ""
     geom: str = ""
     status: str = "pending"
@@ -127,7 +129,8 @@ class Runner:
     def _proses(self, it):
         row = {"divisi": it.divisi, "kode": it.kode, "layer": it.layer, "src_data": it.src_data,
                "dst_dir": it.dst_dir, "dst_data": it.dst_data, "dst_rgb": it.dst_rgb,
-               "dst_legend": it.dst_legend, "nama_base": it.nama_base, "geom": it.geom}
+               "dst_legend": it.dst_legend, "src_rgb": it.src_rgb, "src_legend": it.src_legend,
+               "nama_base": it.nama_base, "geom": it.geom}
         for percobaan in (1, 2):      # retry otomatis 1×
             t0 = time.time()
             it.status = "berjalan"

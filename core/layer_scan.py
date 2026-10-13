@@ -18,11 +18,23 @@ def _peran_dari_nama(nama):
     if "ortho" in n: return "ortho"
     return None
 
+def _pasangan(f):
+    """Untuk <NAME>.data.tif → cek sibling <NAME>.rgb.tif / <NAME>.legend.png (pola ekspor app)."""
+    nama = f.name
+    base = nama[:-len(".data.tif")] if nama.lower().endswith(".data.tif") else nama.rsplit(".", 1)[0]
+    rgb = f.with_name(base + ".rgb.tif")
+    legend = f.with_name(base + ".legend.png")
+    return (str(rgb) if rgb.exists() else None,
+            str(legend) if legend.exists() else None)
+
 def scan_folder(folder):
     hasil = {"layers": {}, "ditolak": []}
     for f in sorted(Path(folder).glob("*")):
         if not f.is_file():
             continue
+        low = f.name.lower()
+        if low.endswith(".rgb.tif") or low.endswith(".rgb.tiff") or low.endswith(".legend.png"):
+            continue        # artefak pendamping ekspor app — bukan layer sumber
         if f.suffix.lower() not in (".tif", ".tiff"):
             hasil["ditolak"].append({"file": str(f), "alasan": "bukan raster tif"})
             continue
@@ -41,6 +53,9 @@ def scan_folder(folder):
         if peran in hasil["layers"]:
             hasil["ditolak"].append({"file": str(f), "alasan": f"duplikat layer '{peran}' (sudah: {hasil['layers'][peran]['data']})"})
             continue
+        rgb, legend = _pasangan(f)
+        meta["rgb"] = rgb
+        meta["legend"] = legend
         hasil["layers"][peran] = meta
     return hasil
 
@@ -65,6 +80,7 @@ def rencana_output(features, layers, output_root, kode_flight):
             base = nama_base(layer, nama_blok)
             rows.append({"divisi": divisi, "kode": p["kode"], "layer": layer,
                          "src_data": info["data"], "nama_base": base,
+                         "src_rgb": info.get("rgb"), "src_legend": info.get("legend"),
                          "dst_dir": str(dst_dir),
                          "dst_data": str(dst_dir / f"{base}.data.tif"),
                          "dst_rgb": str(dst_dir / f"{base}.rgb.tif"),

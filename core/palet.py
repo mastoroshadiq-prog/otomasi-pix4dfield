@@ -9,7 +9,7 @@ def sample_palette(data_tif, rgb_tif, out_json=None, max_px=300_000):
         step = max(1, int(math.sqrt(ds.width * ds.height / max_px)))
         h2, w2 = max(1, ds.height // step), max(1, ds.width // step)
         a = ds.read(1, out_shape=(h2, w2)).astype("float64").ravel()
-        rgb = rs.read(out_shape=(3, h2, w2)).reshape(3, -1)
+        rgb = rs.read([1, 2, 3], out_shape=(3, h2, w2)).reshape(3, -1)
         nod = ds.nodata
     if nod is not None:
         keep = a != nod
