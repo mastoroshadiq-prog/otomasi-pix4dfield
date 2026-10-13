@@ -139,6 +139,16 @@ class Runner:
                 it.dur_s = time.time() - t0
                 it.status = "selesai"
                 self._log(f"{it.kode}/{it.layer}: selesai {it.size} B dalam {it.dur_s:.1f}s")
+                if (it.layer == "ortho" and self._qa_dibuat < self.qa_sample
+                        and it.dst_rgb and it.geom):
+                    try:
+                        from core import qa_overlay
+                        qa_overlay.render_blok_overlay(
+                            it.dst_rgb, it.geom, str(Path(it.dst_dir) / "qa_overlay.png"))
+                        self._log(f"{it.kode}: overlay QA → qa_overlay.png")
+                    except Exception as e:
+                        self._log(f"{it.kode}: overlay QA gagal ({e})")
+                    self._qa_dibuat += 1
                 return
             except KeyboardInterrupt:
                 it.status = "pending"
