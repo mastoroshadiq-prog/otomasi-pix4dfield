@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Ekspor Blok Otomatis — Pix4DField</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<h1>Ekspor Blok Otomatis — Pix4DField</h1>
+
+<section class="kartu" id="tahap-setup">
+  <h2>1. Setup</h2>
+  <label>Folder sumber (hasil ekspor full-extent dari app): <input id="folder_sumber" size="60"></label>
+  <label>Folder output (BARU, mis. F:\dataset\Pix4DField-export-FLG03_auto): <input id="folder_output" size="60"></label>
+  <label>Peta blok PDF: <input id="pdf_peta" size="60"></label>
+  <label>Kode flight (mis. FLG03): <input id="kode_flight" size="10"></label>
+  <button id="btn-simpan">Simpan Konfigurasi</button>
+  <span id="status-simpan"></span>
+</section>
+
+<section class="kartu" id="tahap-pindai">
+  <h2>2. Pindai (dry-run)</h2>
+  <button id="btn-pindai">Pindai Folder Sumber</button>
+  <div id="hasil-pindai"></div>
+  <table id="tabel-blok">
+    <thead><tr><th>Kode</th><th>Divisi</th><th>Luas (ha)</th><th>Koreksi divisi</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section class="kartu" id="tahap-jalankan">
+  <h2>3. Jalankan</h2>
+  <button id="btn-jalankan">Jalankan Ekspor</button>
+  <button id="btn-batalkan">Batalkan</button>
+  <button id="btn-buka">Buka Folder Hasil</button>
+  <a id="unduh-csv" href="/api/unduh/hasil">Unduh CSV</a>
+  &nbsp;<a id="unduh-log" href="/api/unduh/log">Unduh Log</a>
+  <div>Progress: <span id="progress-teks">0/0</span></div>
+  <div id="progress-bar"><div id="progress-isi"></div></div>
+  <table id="tabel-status">
+    <thead><tr><th>Blok</th><th>Layer</th><th>Status</th><th>Ukuran</th><th>Error</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <pre id="log"></pre>
+</section>
+<script src="/static/app.js"></script>
+</body>
+</html>

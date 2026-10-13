@@ -1,0 +1,226 @@
+import json, shutil, socket, threading, webbrowser
+from dataclasses import asdict, fields
+from pathlib import Path
+
+from flask import Flask, jsonify, render_template, request, send_file
+
+from core import config as cfg_mod
+from core import layer_scan, pdf_blok
+from core.runner import Runner
+
+app = Flask(__name__)
+KONFIG = cfg_mod.load_config()
+RUNNER = {"obj": None}
+SHP_DIVISI = r"E:\2. Tanam Inti\2_Tanam_Inti.shp"
+
+
+def _port_bebas(mulai=5000, akhir=5050):
+    for p in range(mulai, akhir):
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", p)) != 0:
+                return p
+    return 0
+
+
+def _free_bytes(path):
+    p = Path(path or ".").resolve()
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    return shutil.disk_usage(str(p)).free
+
+
+def _muat_geojson():
+    """Muat blok.geojson; bila belum ada: kalibrasi + ekstraksi dari PDF (sekali)."""
+    gj_path = Path(KONFIG.path_blok)
+    if not gj_path.exists():
+        pdf = Path(KONFIG.pdf_peta)
+        if not pdf.exists():
+            raise ValueError(f"PDF peta tidak ditemukan: {pdf}")
+        kal_path = Path(KONFIG.path_kalibrasi)
+        if kal_path.exists():
+            kal = pdf_blok.muat_kalibrasi(kal_path)
+        else:
+            kal = pdf_blok.kalibrasi_pdf(pdf)
+            pdf_blok.simpan_kalibrasi(kal, kal_path)
+        if not kal["ok"]:
+            raise ValueError(f"Kalibrasi PDF gagal (residual maks {kal['residual_max_m']:.2f} m)")
+        pdf_blok.ekstrak_blok(pdf, kal, gj_path, gj_path.with_name("qa_pdf_blok.json"),
+                              gj_path.with_name("qa_overlay_peta.png"),
+                              shp_path=SHP_DIVISI if Path(SHP_DIVISI).exists() else None)
+    return json.loads(gj_path.read_text(encoding="utf-8"))
+
+
+def _bangun_rows():
+    gj = _muat_geojson()
+    if not KONFIG.folder_sumber:
+        raise ValueError("Folder sumber belum diisi")
+    if not KONFIG.folder_output:
+        raise ValueError("Folder output belum diisi")
+    if not KONFIG.kode_flight:
+        raise ValueError("Kode flight belum diisi (mis. FLG03)")
+    hasil = layer_scan.scan_folder(KONFIG.folder_sumber)
+    if "ortho" not in hasil["layers"]:
+        raise ValueError("Layer Orthomosaic (5-band) tidak ditemukan di folder sumber")
+    blok = layer_scan.blok_dalam_cakupan(gj, hasil["layers"]["ortho"]["bounds"])
+    if not blok:
+        raise ValueError("Tidak ada blok peta yang beririsan dengan cakupan ortho")
+    rows = layer_scan.rencana_output(blok, hasil["layers"], KONFIG.folder_output, KONFIG.kode_flight)
+    from shapely.geometry import shape
+    wkt_map = {f["properties"]["kode"]: shape(f["geometry"]).wkt for f in blok}
+    for r in rows:
+        r["geom"] = wkt_map[r["kode"]]
+    luas_semua = sum(f["properties"]["luas_ha"] for f in gj["features"]) or 1.0
+    luas_blok = sum(f["properties"]["luas_ha"] for f in blok)
+    ukuran_src = sum(Path(v["data"]).stat().st_size for v in hasil["layers"].values())
+    estimasi = int(ukuran_src * (luas_blok / luas_semua) * 0.6)   # faktor konservatif vs rekompresi
+    kal = None
+    kal_path = Path(KONFIG.path_kalibrasi)
+    if kal_path.exists():
+        k = pdf_blok.muat_kalibrasi(kal_path)
+        kal = {"residual_max_m": k["residual_max_m"], "titik_kontrol": k["titik_kontrol"]}
+    return {"rows": rows, "layers": {k: str(v["data"]) for k, v in hasil["layers"].items()},
+            "ditolak": hasil["ditolak"], "n_blok": len(blok), "estimasi_byte": estimasi,
+            "blok": [{"kode": f["properties"]["kode"],
+                      "divisi": f["properties"].get("divisi", ""),
+                      "luas_ha": f["properties"].get("luas_ha")} for f in blok],
+            "kalibrasi": kal}
+
+
+@app.get("/")
+def index():
+    return render_template("index.html")
+
+
+@app.get("/api/config")
+def get_config():
+    return jsonify(asdict(KONFIG))
+
+
+@app.post("/api/config")
+def post_config():
+    data = request.get_json(force=True)
+    for f in fields(KONFIG):
+        if f.name in data:
+            setattr(KONFIG, f.name, data[f.name])
+    cfg_mod.save_config(KONFIG)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/blok")
+def get_blok():
+    try:
+        gj = _muat_geojson()
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True,
+                    "blok": [{"kode": f["properties"]["kode"],
+                              "divisi": f["properties"].get("divisi", ""),
+                              "luas_ha": f["properties"].get("luas_ha")} for f in gj["features"]]})
+
+
+@app.post("/api/blok/divisi")
+def post_blok_divisi():
+    data = request.get_json(force=True)
+    kode, divisi = data["kode"], data["divisi"]
+    gj_path = Path(KONFIG.path_blok)
+    gj = json.loads(gj_path.read_text(encoding="utf-8"))
+    n = 0
+    for f in gj["features"]:
+        if f["properties"]["kode"] == kode:
+            f["properties"]["divisi"] = divisi
+            n += 1
+    gj_path.write_text(json.dumps(gj, ensure_ascii=False), encoding="utf-8")
+    return jsonify({"ok": n > 0, "diubah": n})
+
+
+@app.post("/api/pindai")
+def pindai():
+    try:
+        info = _bangun_rows()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    bebas = _free_bytes(KONFIG.folder_output)
+    return jsonify({"ok": True, "n_blok": info["n_blok"], "layers": info["layers"],
+                    "ditolak": info["ditolak"], "n_baris": len(info["rows"]),
+                    "estimasi_byte": info["estimasi_byte"], "disk_bebas_byte": bebas,
+                    "cukup_disk": bebas > info["estimasi_byte"] * 1.2,
+                    "blok": info["blok"][:500], "kalibrasi": info["kalibrasi"]})
+
+
+@app.post("/api/jalankan")
+def jalankan():
+    if RUNNER["obj"] and RUNNER["obj"].snapshot()["aktif"]:
+        return jsonify({"ok": False, "error": "Batch sedang berjalan"}), 400
+    try:
+        info = _bangun_rows()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    bebas = _free_bytes(KONFIG.folder_output)
+    if bebas < info["estimasi_byte"] * 1.2:
+        return jsonify({"ok": False, "error": "Ruang disk tidak cukup: estimasi %.1f GB, bebas %.1f GB"
+                        % (info["estimasi_byte"] / 1e9, bebas / 1e9)}), 400
+    r = Runner(info["rows"], KONFIG.folder_output, KONFIG.folder_log,
+               folder_palet=KONFIG.folder_palet)
+    RUNNER["obj"] = r
+    r.start()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/status")
+def status():
+    r = RUNNER["obj"]
+    if r is None:
+        return jsonify({"aktif": False, "items": [], "total": 0, "selesai": 0,
+                        "gagal": 0, "log_tail": ""})
+    snap = r.snapshot()
+    log_tail = ""
+    if r.log_path and Path(r.log_path).exists():
+        log_tail = "\n".join(Path(r.log_path).read_text(encoding="utf-8", errors="replace").splitlines()[-80:])
+    snap["log_tail"] = log_tail
+    return jsonify(snap)
+
+
+@app.post("/api/batalkan")
+def batalkan():
+    if RUNNER["obj"]:
+        RUNNER["obj"].cancel()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/ulangi")
+def ulangi():
+    kode = request.get_json(force=True)["kode"]
+    if RUNNER["obj"]:
+        RUNNER["obj"].retry(kode)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/buka-folder")
+def buka_folder():
+    import os
+    if KONFIG.folder_output and Path(KONFIG.folder_output).exists():
+        os.startfile(KONFIG.folder_output)
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Folder output belum ada"}), 400
+
+
+@app.get("/api/unduh/hasil")
+def unduh_hasil():
+    p = Path(KONFIG.folder_output) / "hasil_per_blok.csv"
+    if not p.exists():
+        return jsonify({"ok": False, "error": "CSV belum ada"}), 404
+    return send_file(p, as_attachment=True)
+
+
+@app.get("/api/unduh/log")
+def unduh_log():
+    r = RUNNER["obj"]
+    if r is None or not r.log_path or not Path(r.log_path).exists():
+        return jsonify({"ok": False, "error": "Log belum ada"}), 404
+    return send_file(r.log_path, as_attachment=True)
+
+
+if __name__ == "__main__":
+    port = KONFIG.port or _port_bebas()
+    threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    app.run(host="127.0.0.1", port=port, debug=False)
