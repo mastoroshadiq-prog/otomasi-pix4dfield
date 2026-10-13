@@ -1,7 +1,7 @@
 # Ekspor Blok Otomatis — Desain Teknis
 
 - **Tanggal:** 2026-10-13
-- **Status:** menunggu review pengguna
+- **Status:** disetujui 2026-10-13 — implementasi dimulai (rencana: `docs/superpowers/plans/2026-10-13-ekspor-blok-otomatis-implementasi.md`)
 - **Konteks sesi:** hasil brainstorming opsi A (export full-extent manual 1× per project, sisanya otomatis) dengan Web UI lokal.
 
 ## 1. Ringkasan & Tujuan
@@ -37,11 +37,12 @@ Menggantikan alur manual Pix4DField (menggambar boundary per blok lalu mengekspo
 | `E:\2. Tanam Inti\2_Tanam_Inti.shp` | 1.162 poligon; atribut No_Block, Divisi, ESTATE, BLOK_Baru, Tahun_Tana; UTM 49S | Lookup divisi & validasi kode |
 | XMP band | Green/Red/RedEdge/NIR/Alpha (560/650/730/860 nm) | Identifikasi band & NDRE |
 | Cache app | 148 tif: 57 ortho 5-band + 91 single-band | (Opsi B — cadangan) |
-| Toolchain | Python 3.14; GDAL 3.13.3 & rasterio tersedia via pip | Dasar implementasi |
+| Toolchain | Python 3.14 + venv `.venv`; rasterio 1.5.2 (GDAL ter-bundel), PyMuPDF 1.28.2, Flask 3.1.3 (terpasang 2026-10-13); CLI GDAL tidak ada di PATH | Dasar implementasi |
+| Kalibrasi PDF | 16 titik kontrol dari grid DMS 3'30" (4×4); residual maks 0,67 m; skala 5,973 m/pt; rotasi 0,014° | Ambang Gate 1 (<3 m) sudah terlampaui baik |
 
 ## 4. Arsitektur
 
-Root proyek = workspace ini (`C:\Users\IKINAI\Documents\Qoder\2026-10-09\35892013`), git repo terpisah.
+Root proyek = `D:\pix4dfield_exporting_tools` (repo git terpisah; dipindah dari workspace Qoder 2026-10-13).
 
 ```
 app.py                  # entry Flask + launcher browser
@@ -74,7 +75,7 @@ Pengguna: export full-extent ──> folder sumber ──> layer_scan ──> ru
 ## 5. Komponen
 
 ### 5.1 `pdf_blok` — ekstraksi & kalibrasi (dijalankan sekali per peta, hasil di-cache)
-- Kalibrasi: ekstrak garis/label grid UTM dari PDF → fit affine `PDF pt → UTM 49S` dengan least-squares (≥4 titik acuan) → laporkan residual; **lolos jika residual < 3 m**.
+- Kalibrasi: ekstrak label DMS (graticule 3'30") + garis grid dari PDF → titik potong → fit affine `PDF pt → UTM 49S` least-squares → laporkan residual; **lolos jika residual < 3 m** (terukur 0,67 m pada PDF contoh).
 - Fallback bila grid tidak terdeteksi: file GCP manual (3–4 pasangan titik PDF↔UTM) yang diisi pengguna (koordinat dari Google Earth/HGU).
 - Ekstraksi poligon blok: path fill/stroke ≥3 titik → transform → geometri UTM; label kode blok ditautkan ke poligon via centroid terdekat; filter hanya pola kode blok valid (mis. `A01`, `H31`, `C04A`, `F22D22`).
 - Validasi silang: poligon hasil vs `bdr_*.zip` (blok yang punya keduanya) → statistik jarak batas; vs `2_Tanam_Inti.shp` (kode & divisi).
@@ -86,7 +87,7 @@ Pengguna: export full-extent ──> folder sumber ──> layer_scan ──> ru
 - Output: daftar layer + preview di halaman Scan.
 
 ### 5.3 `crop_engine` — mesin crop
-- Per blok × layer: `gdalwarp -cutline <poligon> -crop_to_cutline -srcnodata ... -dstnodata ... -of GTiff -co TILED=YES -co BIGTIFF=IF_SAFER -co BLOCKXSIZE=256 -co BLOCKYSIZE=256`.
+- Per blok × layer: crop via **rasterio API** (setara `gdalwarp -cutline -crop_to_cutline`; CLI GDAL tidak tersedia di PATH) — windowed per-strip agar aman memori; tulis GTiff `TILED=YES`, `BLOCK=256`, `BIGTIFF=YES`.
 - Kompresi: float32 → `DEFLATE` (+`PREDICTOR=3`); uint8 RGB → `DEFLATE`; jika GDAL wheel mendukung `LERC` untuk float, jadikan opsi per-layer (diuji pada gate 2 mana yang lebih baik).
 - `.rgb` untuk layer indeks (NDRE/NIR/RE/DSM): render warna memakai **palet yang disampel dari file `.rgb.tif` export lama**; `.legend.png` digenerate dari palet yang sama.
 - Overviews (`gdaladdo`) untuk rgb agar ringan dibuka.
