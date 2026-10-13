@@ -11,7 +11,7 @@ from core.runner import Runner
 app = Flask(__name__)
 KONFIG = cfg_mod.load_config()
 RUNNER = {"obj": None}
-SHP_DIVISI = r"E:\2. Tanam Inti\2_Tanam_Inti.shp"
+KARTU = {"status": None}
 
 
 def _port_bebas(mulai=5000, akhir=5050):
@@ -44,9 +44,9 @@ def _muat_geojson():
             pdf_blok.simpan_kalibrasi(kal, kal_path)
         if not kal["ok"]:
             raise ValueError(f"Kalibrasi PDF gagal (residual maks {kal['residual_max_m']:.2f} m)")
+        shp = KONFIG.shp_kebun if KONFIG.shp_kebun and Path(KONFIG.shp_kebun).exists() else None
         pdf_blok.ekstrak_blok(pdf, kal, gj_path, gj_path.with_name("qa_pdf_blok.json"),
-                              gj_path.with_name("qa_overlay_peta.png"),
-                              shp_path=SHP_DIVISI if Path(SHP_DIVISI).exists() else None)
+                              gj_path.with_name("qa_overlay_peta.png"), shp_path=shp)
     return json.loads(gj_path.read_text(encoding="utf-8"))
 
 
@@ -218,6 +218,68 @@ def unduh_log():
     if r is None or not r.log_path or not Path(r.log_path).exists():
         return jsonify({"ok": False, "error": "Log belum ada"}), 404
     return send_file(r.log_path, as_attachment=True)
+
+
+def _folder_kartu():
+    return Path(KONFIG.folder_output) / "_validasi"
+
+
+@app.get("/api/kartu")
+def api_kartu():
+    if not KONFIG.folder_output:
+        return jsonify({"ok": True, "kartu": [], "dilewati": [], "dibuat": None})
+    idx = _folder_kartu() / "index.json"
+    if not idx.exists():
+        return jsonify({"ok": True, "kartu": [], "dilewati": [], "dibuat": None})
+    return jsonify({"ok": True, **json.loads(idx.read_text(encoding="utf-8"))})
+
+
+@app.get("/api/kartu/file/<nama>")
+def api_kartu_file(nama):
+    if Path(nama).name != nama or not nama.lower().endswith(".png"):
+        return jsonify({"ok": False, "error": "Nama file tidak valid"}), 400
+    p = _folder_kartu() / nama
+    if not p.exists():
+        return jsonify({"ok": False, "error": "Kartu tidak ditemukan"}), 404
+    return send_file(p)
+
+
+@app.post("/api/kartu/buat")
+def api_kartu_buat():
+    if RUNNER["obj"] and RUNNER["obj"].snapshot()["aktif"]:
+        return jsonify({"ok": False, "error": "Batch sedang berjalan — tunggu selesai"}), 400
+    if KARTU["status"] and KARTU["status"].get("aktif"):
+        return jsonify({"ok": False, "error": "Pembuatan kartu sedang berjalan"}), 400
+    if not KONFIG.folder_output:
+        return jsonify({"ok": False, "error": "Folder output belum diisi"}), 400
+    if not KONFIG.kode_flight:
+        return jsonify({"ok": False, "error": "Kode flight belum diisi"}), 400
+    try:
+        _muat_geojson()
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    KARTU["status"] = {"aktif": True, "i": 0, "n": 0, "pesan": "menyiapkan…",
+                       "selesai": 0, "error": ""}
+
+    def _jalan():
+        from core import kartu as kartu_mod
+        try:
+            hasil = kartu_mod.buat_kartu(
+                KONFIG.folder_output, KONFIG.path_blok, KONFIG.kode_flight,
+                path_shp=KONFIG.shp_kebun or None,
+                progress=lambda i, n, k: KARTU["status"].update({"i": i, "n": n, "pesan": k}))
+            KARTU["status"].update({"aktif": False, "selesai": hasil["kartu"],
+                                    "dilewati": hasil["dilewati"], "dest": hasil["dest"]})
+        except Exception as e:
+            KARTU["status"].update({"aktif": False, "error": str(e)})
+
+    threading.Thread(target=_jalan, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/kartu/status")
+def api_kartu_status():
+    return jsonify(KARTU["status"] or {"aktif": False})
 
 
 if __name__ == "__main__":

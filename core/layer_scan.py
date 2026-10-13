@@ -69,13 +69,17 @@ def nama_base(layer, nama_blok):
     if layer == "dsm": return f"Surface model - {nama_blok}"
     return {"ndre": "NDRE", "nir": "NIR", "rededge": "RedEdge"}[layer]
 
+def folder_blok(output_root, kode_flight, divisi, kode):
+    divisi = divisi or "TANPA_DIVISI"
+    return Path(output_root) / divisi / f"{kode_flight}_{divisi.replace(' ', '')}-{kode}"
+
 def rencana_output(features, layers, output_root, kode_flight):
     rows = []
     for f in features:
         p = f["properties"]
         divisi = p.get("divisi") or "TANPA_DIVISI"
-        nama_blok = f"{kode_flight}_{divisi.replace(' ', '')}-{p['kode']}"
-        dst_dir = Path(output_root) / divisi / nama_blok
+        dst_dir = folder_blok(output_root, kode_flight, divisi, p["kode"])
+        nama_blok = dst_dir.name
         for layer, info in layers.items():
             base = nama_base(layer, nama_blok)
             rows.append({"divisi": divisi, "kode": p["kode"], "layer": layer,
