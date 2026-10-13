@@ -37,3 +37,19 @@ def test_lookup_shp():
         pytest.skip("shp tidak ada")
     lookup = pdf_blok.muat_lookup_shp(SHP)
     assert len(lookup) > 500
+
+def test_sel_cacat_direparasi_bukan_dibuang(hasil):
+    """Sel berpotongan-diri (mis. jarum 0,3 pt di tepi D14) harus diperbaiki make_valid."""
+    _, qa = hasil
+    for kode in ("D14", "D02", "F33", "F34"):
+        assert kode in qa["kode_berlabel"], f"{kode} hilang dari hasil ekstraksi"
+        assert kode not in qa["kode_tanpa_poligon"]
+
+def test_d14_luas_masuk_akal(hasil):
+    tmp, _ = hasil
+    gj = json.loads((tmp / "blok.geojson").read_text(encoding="utf-8"))
+    d14 = [f for f in gj["features"] if f["properties"]["kode"] == "D14"]
+    assert len(d14) == 1
+    assert 20.0 <= d14[0]["properties"]["luas_ha"] <= 30.0
+    xs = [c[0] for c in d14[0]["geometry"]["coordinates"][0]]
+    assert 303380 <= min(xs) <= 303460 and 303620 <= max(xs) <= 303700  # celah D13–D15

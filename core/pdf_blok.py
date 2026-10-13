@@ -159,6 +159,7 @@ def _tertutup(pts, tol=1.0):
 
 def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_path=None):
     from shapely.geometry import Polygon, Point
+    from shapely.validation import make_valid
     doc = pymupdf.open(str(pdf_path))
     page = doc[0]
     # kata kode blok
@@ -184,9 +185,20 @@ def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_p
         if not (x_min - 5 <= cx0 <= x_max + 5 and y_min - 5 <= cy0 <= y_max + 5):
             continue  # legenda / luar area peta
         poly_pt = Polygon(pts)
-        if not poly_pt.is_valid or poly_pt.area <= 0:
+        if not poly_pt.is_valid:
+            # sel blok kadang berpotongan-diri di PDF (mis. jarum 0,3 pt di tepi D14);
+            # make_valid bisa kembalikan MultiPolygon/GeometryCollection → ambil poligon terbesar
+            repaired = make_valid(poly_pt)
+            if repaired.geom_type == "Polygon":
+                poly_pt = repaired
+            else:
+                parts = [g for g in getattr(repaired, "geoms", []) if g.geom_type == "Polygon"]
+                if not parts:
+                    continue
+                poly_pt = max(parts, key=lambda g: g.area)
+        if poly_pt.area <= 0:
             continue
-        poly_utm = Polygon([pdf_to_utm(kal, x, y) for x, y in pts])
+        poly_utm = Polygon([pdf_to_utm(kal, x, y) for x, y in poly_pt.exterior.coords])
         luas_ha = poly_utm.area / 10000.0
         if not (0.2 <= luas_ha <= 400):
             continue
