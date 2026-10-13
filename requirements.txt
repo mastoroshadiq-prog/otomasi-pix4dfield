@@ -1,0 +1,9 @@
+flask>=3.1
+rasterio>=1.5
+pymupdf>=1.28
+pillow>=12
+numpy>=2.5
+shapely>=2.2
+pyshp>=3.1
+tifffile>=2026
+pytest>=8

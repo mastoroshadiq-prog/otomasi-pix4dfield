@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+logs/
+laporan/
+data/config.json
+data/kalibrasi.json
+data/blok.geojson
+data/qa_pdf_blok.json
+data/qa_overlay_peta.png
+data/palet/*.json
+!data/palet/bawaan.json
