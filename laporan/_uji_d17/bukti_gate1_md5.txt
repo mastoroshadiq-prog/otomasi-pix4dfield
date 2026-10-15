@@ -1,0 +1,10 @@
+laporan/gate1/blok.geojson  md5=6c62e7db9092af101e05ae2bdcd3a273
+data/blok.geojson  md5=6c62e7db9092af101e05ae2bdcd3a273
+  identik: True  | ukuran 372117 vs 372117 B
+laporan/gate1/qa_pdf_blok.json  md5=b8e3ccd44adcfa89bdb7378d17191bd6
+data/qa_pdf_blok.json  md5=b8e3ccd44adcfa89bdb7378d17191bd6
+  identik: True  | ukuran 8575 vs 8575 B
+laporan/gate1/qa_overlay_peta.png  md5=9b7eb775bf9229c0c79a3eb1180e0da4
+data/qa_overlay_peta.png  md5=9b7eb775bf9229c0c79a3eb1180e0da4
+  identik: True  | ukuran 1325611 vs 1325611 B
+qa_pdf_blok.json: n_berlabel=459

@@ -28,7 +28,11 @@ async function pindai() {
   tb.innerHTML = "";
   for (const b of r.blok) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${b.kode}</td><td>${b.divisi || "-"}</td><td>${b.luas_ha ?? ""}</td>`;
+    for (const v of [b.kode, b.divisi || "-", b.luas_ha ?? ""]) {
+      const cell = document.createElement("td");
+      cell.textContent = v;
+      tr.append(cell);
+    }
     const td = document.createElement("td");
     const inp = document.createElement("input");
     inp.value = b.divisi || "";
@@ -66,8 +70,12 @@ async function polling() {
   for (const it of s.items) {
     const tr = document.createElement("tr");
     tr.style.background = warna(it.status);
-    tr.innerHTML = `<td>${it.divisi} ${it.kode}</td><td>${it.layer}</td><td>${it.status}</td>` +
-                   `<td>${(it.size / 1e6).toFixed(1)} MB</td><td>${it.error}</td>`;
+    for (const v of [`${it.divisi} ${it.kode}`, it.layer, it.status,
+                     `${(it.size / 1e6).toFixed(1)} MB`, it.error]) {
+      const cell = document.createElement("td");
+      cell.textContent = v ?? "";
+      tr.append(cell);
+    }
     const td = document.createElement("td");
     if (it.status === "gagal") {
       const b = document.createElement("button");

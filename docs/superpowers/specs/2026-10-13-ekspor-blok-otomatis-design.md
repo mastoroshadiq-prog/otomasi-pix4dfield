@@ -2,6 +2,7 @@
 
 - **Tanggal:** 2026-10-13
 - **Status:** disetujui 2026-10-13 — implementasi dimulai (rencana: `docs/superpowers/plans/2026-10-13-ekspor-blok-otomatis-implementasi.md`)
+- **Revisi 2026-10-14:** hasil review independen kedua — fallback GCP manual di-de-scope eksplisit (§5.1, §9); status `dilewati (tanpa data)` benar-benar diproduksi (§5.2/§5.4); resume diverifikasi terhadap file & kode flight (§5.4); estimasi disk berbasis footprint sumber (§5.5); justifikasi keputusan ada di komit pesan terkait.
 - **Konteks sesi:** hasil brainstorming opsi A (export full-extent manual 1× per project, sisanya otomatis) dengan Web UI lokal.
 
 ## 1. Ringkasan & Tujuan
@@ -76,7 +77,7 @@ Pengguna: export full-extent ──> folder sumber ──> layer_scan ──> ru
 
 ### 5.1 `pdf_blok` — ekstraksi & kalibrasi (dijalankan sekali per peta, hasil di-cache)
 - Kalibrasi: ekstrak label DMS (graticule 3'30") + garis grid dari PDF → titik potong → fit affine `PDF pt → UTM 49S` least-squares → laporkan residual; **lolos jika residual < 3 m** (terukur 0,67 m pada PDF contoh).
-- Fallback bila grid tidak terdeteksi: file GCP manual (3–4 pasangan titik PDF↔UTM) yang diisi pengguna (koordinat dari Google Earth/HGU).
+- Fallback bila grid tidak terdeteksi: **DE-SCOPE eksplisit (2026-10-14)** — file GCP manual (3–4 pasangan titik PDF↔UTM) TIDAK diimplementasikan pada iterasi ini; bila kalibrasi otomatis gagal, tool berhenti dengan pesan residual spesifik di UI (lihat §9).
 - Ekstraksi poligon blok: path fill/stroke ≥3 titik → transform → geometri UTM; label kode blok ditautkan ke poligon via centroid terdekat; filter hanya pola kode blok valid (mis. `A01`, `H31`, `C04A`, `F22D22`).
 - Validasi silang: poligon hasil vs `bdr_*.zip` (blok yang punya keduanya) → statistik jarak batas; vs `2_Tanam_Inti.shp` (kode & divisi).
 - Output: `data/blok.geojson` + `data/qa_pdf_blok.json` + `data/qa_overlay_peta.png`.
@@ -152,12 +153,13 @@ Log: panel live di UI + `run_<tanggal>.log` + `hasil_per_blok.csv` di folder out
 - Komputasi ulang NDRE dari 5-band (dicatat sebagai opsi masa depan).
 - Opsi B (baca cache `img_*.tif`) — cadangan, butuh investigasi lanjutan.
 - Multi-user/server jaringan.
+- **Fallback GCP manual saat kalibrasi PDF gagal — DE-SCOPE (2026-10-14).** Keputusan pengguna setelah review independen kedua: jalur yang berlaku adalah pesan error residual yang spesifik saja; jalur GCP manual (3–4 pasangan titik PDF↔UTM) dicatat sebagai kandidat iterasi berikutnya, bukan kontrak iterasi ini.
 
 ## 10. Risiko & Mitigasi
 
 | Risiko | Mitigasi |
 |---|---|
-| Kalibrasi PDF tidak akurat (>3 m) | Gate 1 + fallback GCP manual; cross-check `bdr_*.zip` |
+| Kalibrasi PDF tidak akurat (>3 m) | Gate 1 + cross-check `bdr_*.zip`; fallback GCP manual **di-de-scope** (§9) — jalur gagal = pesan residual spesifik |
 | App tidak mendukung export full-extent | Gate 0; alternatif boundary tunggal besar |
 | Rasio kompresi nyata belum diketahui | Diukur pada Gate 2 sebelum batch (estimasi awal 30–60% untuk float) |
 | Palet Pix4D tidak persis tertiru | Palet disampel dari `.rgb.tif` export lama; legend digenerate konsisten |

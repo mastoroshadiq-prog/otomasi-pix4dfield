@@ -4,6 +4,10 @@ import rasterio
 
 ROLE_LAYER = ("ortho", "ndre", "nir", "rededge", "dsm")
 
+# output/sumber per ha terukur pada batch Gate 2 (lihat laporan/_uji_d17/RINGKASAN.md):
+# 24.708.559.348 B / (38.287.432.957 B / 257,9 ha × 197,63 ha) ≈ 0,84
+RASIO_KOMPRESI_GATE2 = 0.84
+
 def baca_meta(path):
     with rasterio.open(path) as ds:
         return {"data": str(path), "bands": ds.count, "dtype": ds.dtypes[0],
@@ -64,6 +68,27 @@ def blok_dalam_cakupan(geojson, bounds):
     b = box(*bounds)
     return [f for f in geojson["features"] if shape(f["geometry"]).intersects(b)]
 
+def luas_footprint_ha(path_data, maks_dim=1024):
+    """Luas area berdata layer (mask band terakhir > 0) dalam ha.
+
+    Dibaca ter-undersample (sisi terpanjang ≤ maks_dim px) agar murah pada
+    file multi-GB; akurasi ±beberapa persen cukup untuk pra-cek disk.
+    """
+    with rasterio.open(path_data) as ds:
+        f = min(1.0, maks_dim / max(ds.width, ds.height))
+        h = max(1, round(ds.height * f))
+        w = max(1, round(ds.width * f))
+        mask = ds.read(ds.count, out_shape=(h, w)) > 0
+        area_px_m2 = abs(ds.transform.a * ds.transform.e) / (f * f)
+    return float(mask.sum()) * area_px_m2 / 1e4
+
+def estimasi_byte_output(byte_src, luas_blok_ha, luas_footprint_ha,
+                         rasio=RASIO_KOMPRESI_GATE2):
+    """Estimasi ukuran output: byte sumber per ha footprint × luas blok × rasio."""
+    if luas_footprint_ha <= 0:
+        raise ValueError("Luas footprint sumber nol — tidak bisa mengestimasi disk")
+    return int(byte_src / luas_footprint_ha * luas_blok_ha * rasio)
+
 def nama_base(layer, nama_blok):
     if layer == "ortho": return f"Orthomosaic - {nama_blok}"
     if layer == "dsm": return f"Surface model - {nama_blok}"
@@ -74,20 +99,27 @@ def folder_blok(output_root, kode_flight, divisi, kode):
     return Path(output_root) / divisi / f"{kode_flight}_{divisi.replace(' ', '')}-{kode}"
 
 def rencana_output(features, layers, output_root, kode_flight):
+    from shapely.geometry import shape, box
     rows = []
     for f in features:
         p = f["properties"]
+        geom = shape(f["geometry"])
         divisi = p.get("divisi") or "TANPA_DIVISI"
         dst_dir = folder_blok(output_root, kode_flight, divisi, p["kode"])
         nama_blok = dst_dir.name
         for layer, info in layers.items():
             base = nama_base(layer, nama_blok)
-            rows.append({"divisi": divisi, "kode": p["kode"], "layer": layer,
-                         "src_data": info["data"], "nama_base": base,
-                         "src_rgb": info.get("rgb"), "src_legend": info.get("legend"),
-                         "dst_dir": str(dst_dir),
-                         "dst_data": str(dst_dir / f"{base}.data.tif"),
-                         "dst_rgb": str(dst_dir / f"{base}.rgb.tif"),
-                         "dst_legend": None if layer == "ortho"
-                                       else str(dst_dir / f"{base}.legend.png")})
+            row = {"divisi": divisi, "kode": p["kode"], "layer": layer,
+                   "src_data": info["data"], "nama_base": base,
+                   "src_rgb": info.get("rgb"), "src_legend": info.get("legend"),
+                   "dst_dir": str(dst_dir),
+                   "dst_data": str(dst_dir / f"{base}.data.tif"),
+                   "dst_rgb": str(dst_dir / f"{base}.rgb.tif"),
+                   "dst_legend": None if layer == "ortho"
+                                 else str(dst_dir / f"{base}.legend.png")}
+            b = info.get("bounds")
+            if b is not None and not geom.intersects(box(*b)):
+                row["status"] = "dilewati"
+                row["error"] = "tanpa data (di luar cakupan layer)"
+            rows.append(row)
     return rows

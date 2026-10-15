@@ -23,9 +23,12 @@ def crop_layer(src_path, geom_wkt, dst_path):
                        transform=ds.window_transform(win), tiled=True,
                        blockxsize=256, blockysize=256, BIGTIFF="YES", num_threads="ALL_CPUS")
         float32 = np.issubdtype(np.dtype(ds.dtypes[0]), np.floating)
+        lossless = float32 or str(dst_path).lower().endswith(".data.tif")
         profile.pop("predictor", None)
-        if float32:
-            profile.update(compress="DEFLATE", predictor=3)
+        if lossless:
+            profile.update(compress="DEFLATE", predictor=3 if float32 else 2)
+            for k in ("photometric", "interleave", "jpeg_quality"):
+                profile.pop(k, None)
         else:
             profile.update(compress="JPEG", JPEG_QUALITY=85)
         nodata = ds.nodata if ds.nodata is not None else (0.0 if float32 else 0)

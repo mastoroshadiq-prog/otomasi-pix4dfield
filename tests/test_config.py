@@ -10,7 +10,14 @@ def test_missing_file_kembali_default(tmp_path):
     cfg = load_config(tmp_path / "belum_ada.json")
     assert cfg.kode_flight == ""
     assert cfg.pdf_peta.endswith("peta_blok.pdf")
-    assert cfg.workers == 1
+    assert not hasattr(cfg, "workers")                    # N-5: field mati dihapus
+
+def test_config_lama_dengan_workers_tetap_dimuat(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text('{"kode_flight": "FLG09", "workers": 4}', encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.kode_flight == "FLG09"                     # field asing diabaikan
+    assert not hasattr(cfg, "workers")
 
 def test_abaikan_field_asing(tmp_path):
     p = tmp_path / "config.json"

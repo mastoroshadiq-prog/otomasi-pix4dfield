@@ -28,6 +28,14 @@ def _font(ukuran, bold):
         return ImageFont.load_default()
 
 
+def _baris_konteks(gsd_cm, residual_m):
+    def _id(v):
+        return f"{v:.2f}".replace(".", ",")
+    sisa = f"residual kalibrasi PDF {_id(residual_m)} m; " if residual_m is not None else ""
+    return (f"konteks: {sisa}GSD {_id(gsd_cm)} cm/px; "
+            "garis digambar apa adanya tanpa penyesuaian")
+
+
 def muat_shp(path_shp):
     import shapefile
     r = shapefile.Reader(str(path_shp))
@@ -87,7 +95,8 @@ def _ke_px(inv, g, off=(0, 0), skala=None):
     return rings
 
 
-def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font_m, font_s):
+def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font_m, font_s,
+                  residual_m=None):
     g_shp = info_shp["geom"] if info_shp else None
     iou = g_pdf.intersection(g_shp).area / g_pdf.union(g_shp).area * 100 if g_shp else None
     geser = g_pdf.centroid.distance(g_shp.centroid) if g_shp else None
@@ -110,6 +119,7 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
 
     with rasterio.open(rgb_path) as ds:
         inv = ~ds.transform
+        gsd_cm = abs(ds.transform.a) * 100
         W = max(1, round(HSTRIP * ds.width / ds.height))
         strip = komposit(ds.read(out_shape=(min(4, ds.count), HSTRIP, W)))
         s = W / ds.width
@@ -170,8 +180,7 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
         kaki = (f"luas PDF {g_pdf.area/1e4:.2f} ha  |  "
                 f"shp tidak ditemukan untuk No_Block={kode}")
     dr.text((pad, Hc - 46), kaki, font=font_m, fill=(20, 20, 20))
-    dr.text((pad, Hc - 23), "konteks: residual kalibrasi PDF 0,49 m; GSD 5,28 cm/px; "
-                            "garis digambar apa adanya tanpa penyesuaian", font=font_s, fill=(90, 90, 90))
+    dr.text((pad, Hc - 23), _baris_konteks(gsd_cm, residual_m), font=font_s, fill=(90, 90, 90))
     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
     cv.save(out_png)
 
@@ -180,11 +189,13 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
             "luas_shp_ha": round(g_shp.area / 1e4, 2) if g_shp else None,
             "iou": round(iou, 1) if iou is not None else None,
             "geser_m": round(geser, 1) if geser is not None else None,
-            "kode_shp": info_shp["kode_shp"] if info_shp else None}
+            "kode_shp": info_shp["kode_shp"] if info_shp else None,
+            "gsd_cm": round(gsd_cm, 2),
+            "residual_m": residual_m}
 
 
 def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
-               hanya=None, dest=None, progress=None):
+               hanya=None, dest=None, progress=None, path_kalibrasi=None):
     """Buat kartu untuk setiap blok yang folder hasilnya ada di output_root.
 
     hanya: set kode blok yang dibatasi (opsional). progress: callback(i, n, kode).
@@ -192,6 +203,11 @@ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
     from core.layer_scan import folder_blok
     gj = json.loads(Path(geojson_path).read_text(encoding="utf-8"))
     shp_map = muat_shp(path_shp) if path_shp and Path(path_shp).exists() else {}
+    residual_m = None
+    if path_kalibrasi and Path(path_kalibrasi).exists():
+        kal = json.loads(Path(path_kalibrasi).read_text(encoding="utf-8"))
+        if kal.get("residual_max_m") is not None:
+            residual_m = float(kal["residual_max_m"])
     dest = Path(dest) if dest else Path(output_root) / "_validasi"
     dest.mkdir(parents=True, exist_ok=True)
     font_b, font_m, font_s = _font(24, True), _font(18, True), _font(16, False)
@@ -218,7 +234,8 @@ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
             progress(i, len(dipilih), kode)
         entri = _render_kartu(kode, divisi, shp_shape(f["geometry"]),
                               shp_map.get(kode.upper().strip()), rgb,
-                              dest / f"kartu_{kode}.png", font_b, font_m, font_s)
+                              dest / f"kartu_{kode}.png", font_b, font_m, font_s,
+                              residual_m=residual_m)
         kartu_list.append(entri)
 
     idx = {"dibuat": datetime.now().isoformat(timespec="seconds"),
@@ -239,10 +256,12 @@ def main():
     ap.add_argument("--shp", default=None, help="path shp kebun (opsional)")
     ap.add_argument("--kode", default=None, help="batasi ke kode tertentu, dipisah koma")
     ap.add_argument("--dest", default=None, help="folder kartu (default: <output>/_validasi)")
+    ap.add_argument("--kalibrasi", default=str(ROOT / "data" / "kalibrasi.json"),
+                    help="kalibrasi.json untuk footer konteks (residual)")
     a = ap.parse_args()
     hanya = {x.strip() for x in a.kode.split(",")} if a.kode else None
     hasil = buat_kartu(a.output, a.geojson, a.kode_flight, path_shp=a.shp,
-                       hanya=hanya, dest=a.dest,
+                       hanya=hanya, dest=a.dest, path_kalibrasi=a.kalibrasi,
                        progress=lambda i, n, k: print(f"[{i}/{n}] kartu {k}"))
     print(f"selesai: {hasil['kartu']} kartu -> {hasil['dest']}; dilewati {len(hasil['dilewati'])}")
     for d in hasil["dilewati"][:10]:

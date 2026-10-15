@@ -77,3 +77,32 @@ def test_kartu_dengan_shp_menghitung_iou(tmp_path):
     assert k["iou"] is not None and k["iou"] > 99.0
     assert k["kode_shp"] == "D013A"
     assert abs(k["luas_shp_ha"] - 12.0) < 0.01
+
+
+def test_baris_konteks_dari_nilai_bukan_hardcode():
+    """R-2: footer kartu tidak lagi hardcode nilai flight uji."""
+    s = kartu._baris_konteks(5.28, 0.4913572)
+    assert s == ("konteks: residual kalibrasi PDF 0,49 m; GSD 5,28 cm/px; "
+                 "garis digambar apa adanya tanpa penyesuaian")
+    s2 = kartu._baris_konteks(3.0, None)                 # tanpa kalibrasi
+    assert s2 == ("konteks: GSD 3,00 cm/px; "
+                  "garis digambar apa adanya tanpa penyesuaian")
+
+
+def test_kartu_metadata_gsd_dan_residual(tmp_path):
+    """R-2: index.json memuat GSD ortho nyata + residual dari kalibrasi.json."""
+    out = _siapkan_output(tmp_path)
+    gj = _tulis_geojson(tmp_path / "blok.geojson", [{"kode": "D13", "divisi": "AME III"}])
+    kal = tmp_path / "kalibrasi.json"
+    kal.write_text(json.dumps({"residual_max_m": 0.123}), encoding="utf-8")
+    kartu.buat_kartu(str(out), str(gj), "TST01", dest=str(tmp_path / "kartu"),
+                     path_kalibrasi=str(kal))
+    idx = json.loads((tmp_path / "kartu" / "index.json").read_text(encoding="utf-8"))
+    k = idx["kartu"][0]
+    assert abs(k["gsd_cm"] - 100.0) < 0.01               # raster uji 1 m/px
+    assert abs(k["residual_m"] - 0.123) < 1e-9
+    idx2_dir = tmp_path / "kartu2"
+    kartu.buat_kartu(str(out), str(gj), "TST01", dest=str(idx2_dir),
+                     path_kalibrasi=str(tmp_path / "tidak_ada.json"))
+    k2 = json.loads((idx2_dir / "index.json").read_text(encoding="utf-8"))["kartu"][0]
+    assert k2["gsd_cm"] is not None and k2["residual_m"] is None

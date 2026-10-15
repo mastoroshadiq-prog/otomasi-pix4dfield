@@ -1,0 +1,36 @@
+{
+ "versi": 2,
+ "kode_flight": "FLG01-AMEIII",
+ "output_root": "F:\\dataset\\Pix4DField-export-FLG01-AMEIII_auto",
+ "geom_blok": {
+  "D13": "<WKT disensor di paket>",
+  "D14": "<WKT disensor di paket>",
+  "D15": "<WKT disensor di paket>",
+  "D16": "<WKT disensor di paket>",
+  "E13": "<WKT disensor di paket>",
+  "E14": "<WKT disensor di paket>",
+  "E15": "<WKT disensor di paket>",
+  "E16": "<WKT disensor di paket>"
+ },
+ "n_items": 40,
+ "item_contoh": {
+  "divisi": "AME III",
+  "kode": "E14",
+  "layer": "nir",
+  "src_data": "F:\\dataset\\Pix4DField-export-Fligh01\\AME III - Test OtoExport\\AME III NIR.data.tif",
+  "dst_dir": "F:\\dataset\\Pix4DField-export-FLG01-AMEIII_auto\\AME III\\FLG01-AMEIII_AMEIII-E14",
+  "dst_data": "F:\\dataset\\Pix4DField-export-FLG01-AMEIII_auto\\AME III\\FLG01-AMEIII_AMEIII-E14\\NIR.data.tif",
+  "dst_rgb": "F:\\dataset\\Pix4DField-export-FLG01-AMEIII_auto\\AME III\\FLG01-AMEIII_AMEIII-E14\\NIR.rgb.tif",
+  "dst_legend": "F:\\dataset\\Pix4DField-export-FLG01-AMEIII_auto\\AME III\\FLG01-AMEIII_AMEIII-E14\\NIR.legend.png",
+  "src_rgb": "F:\\dataset\\Pix4DField-export-Fligh01\\AME III - Test OtoExport\\AME III NIR.rgb.tif",
+  "src_legend": "F:\\dataset\\Pix4DField-export-Fligh01\\AME III - Test OtoExport\\AME III NIR.legend.png",
+  "nama_base": "NIR",
+  "status": "selesai",
+  "error": "",
+  "dur_s": 11.055299043655396,
+  "size": 364725724
+ },
+ "status": {
+  "selesai": 40
+ }
+}

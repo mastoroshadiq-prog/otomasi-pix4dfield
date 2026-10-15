@@ -1,0 +1,9 @@
+AME III NIR.data.tif {"ukuran_byte": 4874415646, "md5_berkas": "6162b6b2c032e65083e068f0a6f229d8", "sha256_piksel_semua_band": "820021e93d0afb794512a93a256c89a48dc7a128fd5d50c207f5bfc0cff28e8e", "band": 1, "dtype": "float32", "nodata": -10000.0, "checksum_gdal_band1": 20064}
+AME III RedEdge.data.tif {"ukuran_byte": 4874415646, "md5_berkas": "f3ce07825970f84b2c55baab270647b1", "sha256_piksel_semua_band": "820021e93d0afb794512a93a256c89a48dc7a128fd5d50c207f5bfc0cff28e8e", "band": 1, "dtype": "float32", "nodata": -10000.0, "checksum_gdal_band1": 20064}
+
+RINGKASAN R-8: {
+ "ukuran_sama": true,
+ "md5_berkas_sama": false,
+ "sha256_piksel_sama": true,
+ "checksum_gdal_sama": true
+}

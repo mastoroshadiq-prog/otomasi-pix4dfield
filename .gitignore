@@ -2,7 +2,32 @@
 __pycache__/
 *.pyc
 logs/
-laporan/
+# laporan: default abaikan, kecuali bukti gate & dokumen review (audit trail S-3)
+laporan/*
+!laporan/_uji_d17/
+laporan/_uji_d17/*
+!laporan/_uji_d17/RINGKASAN.md
+!laporan/_uji_d17/run_gate2.py
+!laporan/_uji_d17/verify_gate2.py
+!laporan/_uji_d17/gate2_verifikasi.json
+!laporan/_uji_d17/BUKTI_*
+!laporan/_uji_d17/bukti_*
+!laporan/_uji_d17/verify_gate2_run_*.txt
+!laporan/gate1/
+laporan/gate1/*
+# repo GitHub PUBLIK: blok.geojson (koordinat blok nyata) & qa_overlay_peta.png (peta kebun nyata) TIDAK dilacak
+!laporan/gate1/qa_pdf_blok.json
+!laporan/reviewer/
+laporan/reviewer/*
+!laporan/reviewer/BRIEF.md
+!laporan/reviewer/PANDUAN_REVIEW_AGENT_LAIN.md
+!laporan/reviewer/RINGKASAN_PROYEK_UNTUK_REVIEW.md
+!laporan/reviewer/LAPORAN_REVIEW_2026-10-14.md
+!laporan/reviewer/Review-Independen-2-Ekspor-Blok-Otomatis-2026-10-14.md
+!laporan/reviewer/buat_paket_review.py
+!laporan/reviewer/LAPORAN_PERBAIKAN_2026-10-14.md
+!laporan/reviewer/buat_paket_verifikasi.py
+!laporan/reviewer/Verifikasi-Perbaikan-Ekspor-Blok-2026-10-14.md
 data/config.json
 data/kalibrasi.json
 data/blok.geojson

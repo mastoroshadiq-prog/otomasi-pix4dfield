@@ -1,0 +1,1156 @@
+# Bukti: diff penuh working tree vs commit baseline 65b4b44 (HEAD saat paket review pertama dibuat)
+# Dibuat: 2026-10-15 09:48
+# Perintah: git diff --stat 65b4b44 ; git diff 65b4b44 ; git status --short
+
+## git diff --stat 65b4b44
+
+ .gitignore                                         |  27 +++-
+ app.py                                             |  58 +++++---
+ core/config.py                                     |   1 -
+ core/crop_engine.py                                |   7 +-
+ core/kartu.py                                      |  33 ++++-
+ core/layer_scan.py                                 |  48 +++++--
+ core/runner.py                                     |  72 ++++++++--
+ .../2026-10-13-ekspor-blok-otomatis-design.md      |   6 +-
+ requirements.txt                                   |  35 +++--
+ static/app.js                                      |  14 +-
+ tests/test_app.py                                  | 157 +++++++++++++++++++++
+ tests/test_config.py                               |   9 +-
+ tests/test_crop_engine.py                          |  43 ++++++
+ tests/test_kartu.py                                |  29 ++++
+ tests/test_layer_scan.py                           |  64 +++++++++
+ tests/test_runner.py                               | 143 +++++++++++++++++++
+ 16 files changed, 681 insertions(+), 65 deletions(-)
+
+## git diff 65b4b44 (patch penuh)
+
+diff --git a/.gitignore b/.gitignore
+index 4ae7bcb..f2770d3 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -2,7 +2,32 @@
+ __pycache__/
+ *.pyc
+ logs/
+-laporan/
++# laporan: default abaikan, kecuali bukti gate & dokumen review (audit trail S-3)
++laporan/*
++!laporan/_uji_d17/
++laporan/_uji_d17/*
++!laporan/_uji_d17/RINGKASAN.md
++!laporan/_uji_d17/run_gate2.py
++!laporan/_uji_d17/verify_gate2.py
++!laporan/_uji_d17/gate2_verifikasi.json
++!laporan/_uji_d17/BUKTI_*
++!laporan/_uji_d17/bukti_*
++!laporan/_uji_d17/verify_gate2_run_*.txt
++!laporan/gate1/
++laporan/gate1/*
++# repo GitHub PUBLIK: blok.geojson (koordinat blok nyata) & qa_overlay_peta.png (peta kebun nyata) TIDAK dilacak
++!laporan/gate1/qa_pdf_blok.json
++!laporan/reviewer/
++laporan/reviewer/*
++!laporan/reviewer/BRIEF.md
++!laporan/reviewer/PANDUAN_REVIEW_AGENT_LAIN.md
++!laporan/reviewer/RINGKASAN_PROYEK_UNTUK_REVIEW.md
++!laporan/reviewer/LAPORAN_REVIEW_2026-10-14.md
++!laporan/reviewer/Review-Independen-2-Ekspor-Blok-Otomatis-2026-10-14.md
++!laporan/reviewer/buat_paket_review.py
++!laporan/reviewer/LAPORAN_PERBAIKAN_2026-10-14.md
++!laporan/reviewer/buat_paket_verifikasi.py
++!laporan/reviewer/Verifikasi-Perbaikan-Ekspor-Blok-2026-10-14.md
+ data/config.json
+ data/kalibrasi.json
+ data/blok.geojson
+diff --git a/app.py b/app.py
+index fcc1fc5..65a892f 100644
+--- a/app.py
++++ b/app.py
+@@ -12,6 +12,7 @@ app = Flask(__name__)
+ KONFIG = cfg_mod.load_config()
+ RUNNER = {"obj": None}
+ KARTU = {"status": None}
++JALANKAN_LOCK = threading.Lock()
+ 
+ 
+ def _port_bebas(mulai=5000, akhir=5050):
+@@ -19,7 +20,7 @@ def _port_bebas(mulai=5000, akhir=5050):
+         with socket.socket() as s:
+             if s.connect_ex(("127.0.0.1", p)) != 0:
+                 return p
+-    return 0
++    return None
+ 
+ 
+ def _free_bytes(path):
+@@ -69,10 +70,10 @@ def _bangun_rows():
+     wkt_map = {f["properties"]["kode"]: shape(f["geometry"]).wkt for f in blok}
+     for r in rows:
+         r["geom"] = wkt_map[r["kode"]]
+-    luas_semua = sum(f["properties"]["luas_ha"] for f in gj["features"]) or 1.0
+     luas_blok = sum(f["properties"]["luas_ha"] for f in blok)
+     ukuran_src = sum(Path(v["data"]).stat().st_size for v in hasil["layers"].values())
+-    estimasi = int(ukuran_src * (luas_blok / luas_semua) * 0.6)   # faktor konservatif vs rekompresi
++    luas_fp = layer_scan.luas_footprint_ha(hasil["layers"]["ortho"]["data"])
++    estimasi = layer_scan.estimasi_byte_output(ukuran_src, luas_blok, luas_fp)
+     kal = None
+     kal_path = Path(KONFIG.path_kalibrasi)
+     if kal_path.exists():
+@@ -144,26 +145,44 @@ def pindai():
+                     "ditolak": info["ditolak"], "n_baris": len(info["rows"]),
+                     "estimasi_byte": info["estimasi_byte"], "disk_bebas_byte": bebas,
+                     "cukup_disk": bebas > info["estimasi_byte"] * 1.2,
+-                    "blok": info["blok"][:500], "kalibrasi": info["kalibrasi"]})
++                    "blok": info["blok"], "kalibrasi": info["kalibrasi"]})
+ 
+ 
+ @app.post("/api/jalankan")
+ def jalankan():
+-    if RUNNER["obj"] and RUNNER["obj"].snapshot()["aktif"]:
+-        return jsonify({"ok": False, "error": "Batch sedang berjalan"}), 400
++    if not JALANKAN_LOCK.acquire(blocking=False):
++        return jsonify({"ok": False, "error": "Permintaan lain sedang diproses"}), 400
+     try:
+-        info = _bangun_rows()
+-    except Exception as e:
+-        return jsonify({"ok": False, "error": str(e)}), 400
+-    bebas = _free_bytes(KONFIG.folder_output)
+-    if bebas < info["estimasi_byte"] * 1.2:
+-        return jsonify({"ok": False, "error": "Ruang disk tidak cukup: estimasi %.1f GB, bebas %.1f GB"
+-                        % (info["estimasi_byte"] / 1e9, bebas / 1e9)}), 400
+-    r = Runner(info["rows"], KONFIG.folder_output, KONFIG.folder_log,
+-               folder_palet=KONFIG.folder_palet)
+-    RUNNER["obj"] = r
+-    r.start()
+-    return jsonify({"ok": True})
++        if RUNNER["obj"] and RUNNER["obj"].snapshot()["aktif"]:
++            return jsonify({"ok": False, "error": "Batch sedang berjalan"}), 400
++        out = Path(KONFIG.folder_output)
++        if out.exists() and any(out.iterdir()) and not out.name.endswith("_auto"):
++            return jsonify({"ok": False, "error":
++                            "Folder output sudah berisi dan bukan folder baru '_auto' — "
++                            "pilih folder output baru agar arsip lama tidak tertimpa"}), 400
++        st_path = out / "state.json"
++        if st_path.exists():
++            st = json.loads(st_path.read_text(encoding="utf-8"))
++            if st.get("versi", 1) >= 2 and st.get("kode_flight") and st["kode_flight"] != KONFIG.kode_flight:
++                return jsonify({"ok": False, "error":
++                                f"Folder output berisi hasil flight '{st['kode_flight']}' — "
++                                f"kode flight sekarang '{KONFIG.kode_flight}'. "
++                                "Ganti folder output atau kode flight"}), 400
++        try:
++            info = _bangun_rows()
++        except Exception as e:
++            return jsonify({"ok": False, "error": str(e)}), 400
++        bebas = _free_bytes(KONFIG.folder_output)
++        if bebas < info["estimasi_byte"] * 1.2:
++            return jsonify({"ok": False, "error": "Ruang disk tidak cukup: estimasi %.1f GB, bebas %.1f GB"
++                            % (info["estimasi_byte"] / 1e9, bebas / 1e9)}), 400
++        r = Runner(info["rows"], KONFIG.folder_output, KONFIG.folder_log,
++                   folder_palet=KONFIG.folder_palet, kode_flight=KONFIG.kode_flight)
++        RUNNER["obj"] = r
++        r.start()
++        return jsonify({"ok": True})
++    finally:
++        JALANKAN_LOCK.release()
+ 
+ 
+ @app.get("/api/status")
+@@ -267,6 +286,7 @@ def api_kartu_buat():
+             hasil = kartu_mod.buat_kartu(
+                 KONFIG.folder_output, KONFIG.path_blok, KONFIG.kode_flight,
+                 path_shp=KONFIG.shp_kebun or None,
++                path_kalibrasi=KONFIG.path_kalibrasi or None,
+                 progress=lambda i, n, k: KARTU["status"].update({"i": i, "n": n, "pesan": k}))
+             KARTU["status"].update({"aktif": False, "selesai": hasil["kartu"],
+                                     "dilewati": hasil["dilewati"], "dest": hasil["dest"]})
+@@ -284,5 +304,7 @@ def api_kartu_status():
+ 
+ if __name__ == "__main__":
+     port = KONFIG.port or _port_bebas()
++    if port is None:
++        raise SystemExit("Tidak ada port bebas di 127.0.0.1:5000-5049 — tutup aplikasi lain lalu coba lagi")
+     threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+     app.run(host="127.0.0.1", port=port, debug=False)
+diff --git a/core/config.py b/core/config.py
+index 52be2eb..3b48d2b 100644
+--- a/core/config.py
++++ b/core/config.py
+@@ -11,7 +11,6 @@ class AppConfig:
+     pdf_peta: str = str(ROOT / "data" / "sumber" / "peta_blok.pdf")
+     kode_flight: str = ""
+     shp_kebun: str = r"E:\2. Tanam Inti\2_Tanam_Inti.shp"
+-    workers: int = 1
+     port: int = 0
+     path_kalibrasi: str = str(ROOT / "data" / "kalibrasi.json")
+     path_blok: str = str(ROOT / "data" / "blok.geojson")
+diff --git a/core/crop_engine.py b/core/crop_engine.py
+index fc79c5c..3f296c8 100644
+--- a/core/crop_engine.py
++++ b/core/crop_engine.py
+@@ -23,9 +23,12 @@ def crop_layer(src_path, geom_wkt, dst_path):
+                        transform=ds.window_transform(win), tiled=True,
+                        blockxsize=256, blockysize=256, BIGTIFF="YES", num_threads="ALL_CPUS")
+         float32 = np.issubdtype(np.dtype(ds.dtypes[0]), np.floating)
++        lossless = float32 or str(dst_path).lower().endswith(".data.tif")
+         profile.pop("predictor", None)
+-        if float32:
+-            profile.update(compress="DEFLATE", predictor=3)
++        if lossless:
++            profile.update(compress="DEFLATE", predictor=3 if float32 else 2)
++            for k in ("photometric", "interleave", "jpeg_quality"):
++                profile.pop(k, None)
+         else:
+             profile.update(compress="JPEG", JPEG_QUALITY=85)
+         nodata = ds.nodata if ds.nodata is not None else (0.0 if float32 else 0)
+diff --git a/core/kartu.py b/core/kartu.py
+index 5829bad..7ebce2b 100644
+--- a/core/kartu.py
++++ b/core/kartu.py
+@@ -28,6 +28,14 @@ def _font(ukuran, bold):
+         return ImageFont.load_default()
+ 
+ 
++def _baris_konteks(gsd_cm, residual_m):
++    def _id(v):
++        return f"{v:.2f}".replace(".", ",")
++    sisa = f"residual kalibrasi PDF {_id(residual_m)} m; " if residual_m is not None else ""
++    return (f"konteks: {sisa}GSD {_id(gsd_cm)} cm/px; "
++            "garis digambar apa adanya tanpa penyesuaian")
++
++
+ def muat_shp(path_shp):
+     import shapefile
+     r = shapefile.Reader(str(path_shp))
+@@ -87,7 +95,8 @@ def _ke_px(inv, g, off=(0, 0), skala=None):
+     return rings
+ 
+ 
+-def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font_m, font_s):
++def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font_m, font_s,
++                  residual_m=None):
+     g_shp = info_shp["geom"] if info_shp else None
+     iou = g_pdf.intersection(g_shp).area / g_pdf.union(g_shp).area * 100 if g_shp else None
+     geser = g_pdf.centroid.distance(g_shp.centroid) if g_shp else None
+@@ -110,6 +119,7 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
+ 
+     with rasterio.open(rgb_path) as ds:
+         inv = ~ds.transform
++        gsd_cm = abs(ds.transform.a) * 100
+         W = max(1, round(HSTRIP * ds.width / ds.height))
+         strip = komposit(ds.read(out_shape=(min(4, ds.count), HSTRIP, W)))
+         s = W / ds.width
+@@ -170,8 +180,7 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
+         kaki = (f"luas PDF {g_pdf.area/1e4:.2f} ha  |  "
+                 f"shp tidak ditemukan untuk No_Block={kode}")
+     dr.text((pad, Hc - 46), kaki, font=font_m, fill=(20, 20, 20))
+-    dr.text((pad, Hc - 23), "konteks: residual kalibrasi PDF 0,49 m; GSD 5,28 cm/px; "
+-                            "garis digambar apa adanya tanpa penyesuaian", font=font_s, fill=(90, 90, 90))
++    dr.text((pad, Hc - 23), _baris_konteks(gsd_cm, residual_m), font=font_s, fill=(90, 90, 90))
+     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
+     cv.save(out_png)
+ 
+@@ -180,11 +189,13 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
+             "luas_shp_ha": round(g_shp.area / 1e4, 2) if g_shp else None,
+             "iou": round(iou, 1) if iou is not None else None,
+             "geser_m": round(geser, 1) if geser is not None else None,
+-            "kode_shp": info_shp["kode_shp"] if info_shp else None}
++            "kode_shp": info_shp["kode_shp"] if info_shp else None,
++            "gsd_cm": round(gsd_cm, 2),
++            "residual_m": residual_m}
+ 
+ 
+ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
+-               hanya=None, dest=None, progress=None):
++               hanya=None, dest=None, progress=None, path_kalibrasi=None):
+     """Buat kartu untuk setiap blok yang folder hasilnya ada di output_root.
+ 
+     hanya: set kode blok yang dibatasi (opsional). progress: callback(i, n, kode).
+@@ -192,6 +203,11 @@ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
+     from core.layer_scan import folder_blok
+     gj = json.loads(Path(geojson_path).read_text(encoding="utf-8"))
+     shp_map = muat_shp(path_shp) if path_shp and Path(path_shp).exists() else {}
++    residual_m = None
++    if path_kalibrasi and Path(path_kalibrasi).exists():
++        kal = json.loads(Path(path_kalibrasi).read_text(encoding="utf-8"))
++        if kal.get("residual_max_m") is not None:
++            residual_m = float(kal["residual_max_m"])
+     dest = Path(dest) if dest else Path(output_root) / "_validasi"
+     dest.mkdir(parents=True, exist_ok=True)
+     font_b, font_m, font_s = _font(24, True), _font(18, True), _font(16, False)
+@@ -218,7 +234,8 @@ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
+             progress(i, len(dipilih), kode)
+         entri = _render_kartu(kode, divisi, shp_shape(f["geometry"]),
+                               shp_map.get(kode.upper().strip()), rgb,
+-                              dest / f"kartu_{kode}.png", font_b, font_m, font_s)
++                              dest / f"kartu_{kode}.png", font_b, font_m, font_s,
++                              residual_m=residual_m)
+         kartu_list.append(entri)
+ 
+     idx = {"dibuat": datetime.now().isoformat(timespec="seconds"),
+@@ -239,10 +256,12 @@ def main():
+     ap.add_argument("--shp", default=None, help="path shp kebun (opsional)")
+     ap.add_argument("--kode", default=None, help="batasi ke kode tertentu, dipisah koma")
+     ap.add_argument("--dest", default=None, help="folder kartu (default: <output>/_validasi)")
++    ap.add_argument("--kalibrasi", default=str(ROOT / "data" / "kalibrasi.json"),
++                    help="kalibrasi.json untuk footer konteks (residual)")
+     a = ap.parse_args()
+     hanya = {x.strip() for x in a.kode.split(",")} if a.kode else None
+     hasil = buat_kartu(a.output, a.geojson, a.kode_flight, path_shp=a.shp,
+-                       hanya=hanya, dest=a.dest,
++                       hanya=hanya, dest=a.dest, path_kalibrasi=a.kalibrasi,
+                        progress=lambda i, n, k: print(f"[{i}/{n}] kartu {k}"))
+     print(f"selesai: {hasil['kartu']} kartu -> {hasil['dest']}; dilewati {len(hasil['dilewati'])}")
+     for d in hasil["dilewati"][:10]:
+diff --git a/core/layer_scan.py b/core/layer_scan.py
+index efd3daf..25e1f47 100644
+--- a/core/layer_scan.py
++++ b/core/layer_scan.py
+@@ -4,6 +4,10 @@ import rasterio
+ 
+ ROLE_LAYER = ("ortho", "ndre", "nir", "rededge", "dsm")
+ 
++# output/sumber per ha terukur pada batch Gate 2 (lihat laporan/_uji_d17/RINGKASAN.md):
++# 24.708.559.348 B / (38.287.432.957 B / 257,9 ha × 197,63 ha) ≈ 0,84
++RASIO_KOMPRESI_GATE2 = 0.84
++
+ def baca_meta(path):
+     with rasterio.open(path) as ds:
+         return {"data": str(path), "bands": ds.count, "dtype": ds.dtypes[0],
+@@ -64,6 +68,27 @@ def blok_dalam_cakupan(geojson, bounds):
+     b = box(*bounds)
+     return [f for f in geojson["features"] if shape(f["geometry"]).intersects(b)]
+ 
++def luas_footprint_ha(path_data, maks_dim=1024):
++    """Luas area berdata layer (mask band terakhir > 0) dalam ha.
++
++    Dibaca ter-undersample (sisi terpanjang ≤ maks_dim px) agar murah pada
++    file multi-GB; akurasi ±beberapa persen cukup untuk pra-cek disk.
++    """
++    with rasterio.open(path_data) as ds:
++        f = min(1.0, maks_dim / max(ds.width, ds.height))
++        h = max(1, round(ds.height * f))
++        w = max(1, round(ds.width * f))
++        mask = ds.read(ds.count, out_shape=(h, w)) > 0
++        area_px_m2 = abs(ds.transform.a * ds.transform.e) / (f * f)
++    return float(mask.sum()) * area_px_m2 / 1e4
++
++def estimasi_byte_output(byte_src, luas_blok_ha, luas_footprint_ha,
++                         rasio=RASIO_KOMPRESI_GATE2):
++    """Estimasi ukuran output: byte sumber per ha footprint × luas blok × rasio."""
++    if luas_footprint_ha <= 0:
++        raise ValueError("Luas footprint sumber nol — tidak bisa mengestimasi disk")
++    return int(byte_src / luas_footprint_ha * luas_blok_ha * rasio)
++
+ def nama_base(layer, nama_blok):
+     if layer == "ortho": return f"Orthomosaic - {nama_blok}"
+     if layer == "dsm": return f"Surface model - {nama_blok}"
+@@ -74,20 +99,27 @@ def folder_blok(output_root, kode_flight, divisi, kode):
+     return Path(output_root) / divisi / f"{kode_flight}_{divisi.replace(' ', '')}-{kode}"
+ 
+ def rencana_output(features, layers, output_root, kode_flight):
++    from shapely.geometry import shape, box
+     rows = []
+     for f in features:
+         p = f["properties"]
++        geom = shape(f["geometry"])
+         divisi = p.get("divisi") or "TANPA_DIVISI"
+         dst_dir = folder_blok(output_root, kode_flight, divisi, p["kode"])
+         nama_blok = dst_dir.name
+         for layer, info in layers.items():
+             base = nama_base(layer, nama_blok)
+-            rows.append({"divisi": divisi, "kode": p["kode"], "layer": layer,
+-                         "src_data": info["data"], "nama_base": base,
+-                         "src_rgb": info.get("rgb"), "src_legend": info.get("legend"),
+-                         "dst_dir": str(dst_dir),
+-                         "dst_data": str(dst_dir / f"{base}.data.tif"),
+-                         "dst_rgb": str(dst_dir / f"{base}.rgb.tif"),
+-                         "dst_legend": None if layer == "ortho"
+-                                       else str(dst_dir / f"{base}.legend.png")})
++            row = {"divisi": divisi, "kode": p["kode"], "layer": layer,
++                   "src_data": info["data"], "nama_base": base,
++                   "src_rgb": info.get("rgb"), "src_legend": info.get("legend"),
++                   "dst_dir": str(dst_dir),
++                   "dst_data": str(dst_dir / f"{base}.data.tif"),
++                   "dst_rgb": str(dst_dir / f"{base}.rgb.tif"),
++                   "dst_legend": None if layer == "ortho"
++                                 else str(dst_dir / f"{base}.legend.png")}
++            b = info.get("bounds")
++            if b is not None and not geom.intersects(box(*b)):
++                row["status"] = "dilewati"
++                row["error"] = "tanpa data (di luar cakupan layer)"
++            rows.append(row)
+     return rows
+diff --git a/core/runner.py b/core/runner.py
+index af739d1..feb91e2 100644
+--- a/core/runner.py
++++ b/core/runner.py
+@@ -23,12 +23,13 @@ class Item:
+     size: int = 0
+ 
+ class Runner:
+-    def __init__(self, rows, output_root, folder_log, workers=1, crop_fn=None,
+-                 qa_sample=2, folder_palet=None):
++    def __init__(self, rows, output_root, folder_log, crop_fn=None,
++                 qa_sample=2, folder_palet=None, kode_flight=""):
+         from core import config as cfg_mod
+         self.items = [Item(**r) for r in rows]
+         self.output_root = Path(output_root)
+         self.folder_log = Path(folder_log)
++        self.kode_flight = kode_flight
+         if crop_fn is None:
+             from core import crop_engine
+             fp = folder_palet or str(cfg_mod.ROOT / "data" / "palet")
+@@ -50,35 +51,70 @@ class Runner:
+ 
+     def snapshot(self):
+         with self._lock:
+-            items = [asdict(it) for it in self.items]
++            items = []
++            for it in self.items:
++                d = asdict(it)
++                d.pop("geom", None)          # WKT tidak dipakai UI; hemat payload poll
++                items.append(d)
+         return {"aktif": bool(self._thread and self._thread.is_alive()),
+                 "total": len(items),
+                 "selesai": sum(1 for it in items if it["status"] == "selesai"),
+                 "gagal": sum(1 for it in items if it["status"] == "gagal"),
++                "dilewati": sum(1 for it in items if it["status"] == "dilewati"),
+                 "items": items,
+                 "log_file": str(self.log_path) if self.log_path else ""}
+ 
+     def _tulis_state(self):
+         with self._lock:
+-            data = {"items": [asdict(it) for it in self.items],
++            geom_blok, items = {}, []
++            for it in self.items:
++                d = asdict(it)
++                g = d.pop("geom", "")
++                if g and it.kode not in geom_blok:
++                    geom_blok[it.kode] = g
++                items.append(d)
++            data = {"versi": 2, "kode_flight": self.kode_flight,
++                    "output_root": str(self.output_root), "geom_blok": geom_blok,
++                    "items": items,
+                     "diperbarui": datetime.now().isoformat(timespec="seconds")}
+         tmp = self.state_path.with_suffix(".tmp")
+         tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+         tmp.replace(self.state_path)
+ 
++    @staticmethod
++    def _berkas_lengkap(prev):
++        """Verifikasi murah jalur resume: file output ada & ukuran data cocok."""
++        for k in ("dst_data", "dst_rgb", "dst_legend"):
++            p = prev.get(k)
++            if p and not Path(p).exists():
++                return False
++        d, ukuran = prev.get("dst_data"), prev.get("size") or 0
++        return not (d and ukuran and Path(d).stat().st_size != ukuran)
++
+     def _muat_state(self):
+-        """Resume: item selesai/dilewati dari run sebelumnya dilewati."""
++        """Resume: item selesai/dilewati dilewati — setelah verifikasi file & flight."""
+         if not self.state_path.exists():
+             return
+         data = json.loads(self.state_path.read_text(encoding="utf-8"))
++        flight_lama = data.get("kode_flight", "")
++        if data.get("versi", 1) >= 2 and flight_lama != self.kode_flight:
++            self._log(f"state.json milik flight '{flight_lama}' ≠ '{self.kode_flight}' — resume diabaikan")
++            return
++        geom_blok = data.get("geom_blok", {})
+         lama = {(it["kode"], it["layer"]): it for it in data.get("items", [])}
+         with self._lock:
+             for it in self.items:
+                 prev = lama.get((it.kode, it.layer))
+                 if prev and prev["status"] in ("selesai", "dilewati"):
++                    if prev["status"] == "selesai" and not self._berkas_lengkap(prev):
++                        self._log(f"{it.kode}/{it.layer}: file output hilang/berubah — diulang")
++                        continue
+                     it.status = prev["status"]
+                     it.size = prev.get("size", 0)
+                     it.dur_s = prev.get("dur_s", 0.0)
++                    it.error = prev.get("error", "")
++                if not it.geom and geom_blok.get(it.kode):
++                    it.geom = geom_blok[it.kode]
+ 
+     def start(self):
+         if self._thread and self._thread.is_alive():
+@@ -104,17 +140,27 @@ class Runner:
+     def run(self):
+         self.output_root.mkdir(parents=True, exist_ok=True)
+         self.folder_log.mkdir(parents=True, exist_ok=True)
+-        self.log_path = self.folder_log / f"run_{datetime.now():%Y%m%d_%H%M%S}.log"
+-        self._logger = logging.getLogger(f"runner_{id(self)}")
+-        self._logger.setLevel(logging.INFO)
+-        if not self._logger.handlers:
+-            fh = logging.FileHandler(self.log_path, encoding="utf-8")
+-            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+-            self._logger.addHandler(fh)
++        base = self.folder_log / f"run_{datetime.now():%Y%m%d_%H%M%S}.log"
++        self.log_path = base
++        n = 1
++        while self.log_path.exists():          # run kedua dalam detik yang sama
++            self.log_path = base.with_name(f"{base.stem}_{n}.log")
++            n += 1
++        if self._logger is None:
++            self._logger = logging.getLogger(f"runner_{id(self)}")
++            self._logger.setLevel(logging.INFO)
++        for h in list(self._logger.handlers):  # tutup handler lama (retry) agar file log baru terpasang
++            self._logger.removeHandler(h)
++            h.close()
++        fh = logging.FileHandler(self.log_path, encoding="utf-8")
++        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
++        self._logger.addHandler(fh)
+         self._muat_state()
+         with self._lock:
+             todo = [it for it in self.items if it.status == "pending"]
+-        self._log(f"Batch mulai: {len(todo)} item")
++            n_dilewati = sum(1 for it in self.items if it.status == "dilewati")
++        self._log(f"Batch mulai: {len(todo)} item"
++                  + (f" ({n_dilewati} dilewati tanpa data)" if n_dilewati else ""))
+         for it in todo:
+             if self._batal.is_set():
+                 self._log("Dibatalkan — item tersisa tetap pending")
+diff --git a/docs/superpowers/specs/2026-10-13-ekspor-blok-otomatis-design.md b/docs/superpowers/specs/2026-10-13-ekspor-blok-otomatis-design.md
+index d95cf79..7509215 100644
+--- a/docs/superpowers/specs/2026-10-13-ekspor-blok-otomatis-design.md
++++ b/docs/superpowers/specs/2026-10-13-ekspor-blok-otomatis-design.md
+@@ -2,6 +2,7 @@
+ 
+ - **Tanggal:** 2026-10-13
+ - **Status:** disetujui 2026-10-13 — implementasi dimulai (rencana: `docs/superpowers/plans/2026-10-13-ekspor-blok-otomatis-implementasi.md`)
++- **Revisi 2026-10-14:** hasil review independen kedua — fallback GCP manual di-de-scope eksplisit (§5.1, §9); status `dilewati (tanpa data)` benar-benar diproduksi (§5.2/§5.4); resume diverifikasi terhadap file & kode flight (§5.4); estimasi disk berbasis footprint sumber (§5.5); justifikasi keputusan ada di komit pesan terkait.
+ - **Konteks sesi:** hasil brainstorming opsi A (export full-extent manual 1× per project, sisanya otomatis) dengan Web UI lokal.
+ 
+ ## 1. Ringkasan & Tujuan
+@@ -76,7 +77,7 @@ Pengguna: export full-extent ──> folder sumber ──> layer_scan ──> ru
+ 
+ ### 5.1 `pdf_blok` — ekstraksi & kalibrasi (dijalankan sekali per peta, hasil di-cache)
+ - Kalibrasi: ekstrak label DMS (graticule 3'30") + garis grid dari PDF → titik potong → fit affine `PDF pt → UTM 49S` least-squares → laporkan residual; **lolos jika residual < 3 m** (terukur 0,67 m pada PDF contoh).
+-- Fallback bila grid tidak terdeteksi: file GCP manual (3–4 pasangan titik PDF↔UTM) yang diisi pengguna (koordinat dari Google Earth/HGU).
++- Fallback bila grid tidak terdeteksi: **DE-SCOPE eksplisit (2026-10-14)** — file GCP manual (3–4 pasangan titik PDF↔UTM) TIDAK diimplementasikan pada iterasi ini; bila kalibrasi otomatis gagal, tool berhenti dengan pesan residual spesifik di UI (lihat §9).
+ - Ekstraksi poligon blok: path fill/stroke ≥3 titik → transform → geometri UTM; label kode blok ditautkan ke poligon via centroid terdekat; filter hanya pola kode blok valid (mis. `A01`, `H31`, `C04A`, `F22D22`).
+ - Validasi silang: poligon hasil vs `bdr_*.zip` (blok yang punya keduanya) → statistik jarak batas; vs `2_Tanam_Inti.shp` (kode & divisi).
+ - Output: `data/blok.geojson` + `data/qa_pdf_blok.json` + `data/qa_overlay_peta.png`.
+@@ -152,12 +153,13 @@ Log: panel live di UI + `run_<tanggal>.log` + `hasil_per_blok.csv` di folder out
+ - Komputasi ulang NDRE dari 5-band (dicatat sebagai opsi masa depan).
+ - Opsi B (baca cache `img_*.tif`) — cadangan, butuh investigasi lanjutan.
+ - Multi-user/server jaringan.
++- **Fallback GCP manual saat kalibrasi PDF gagal — DE-SCOPE (2026-10-14).** Keputusan pengguna setelah review independen kedua: jalur yang berlaku adalah pesan error residual yang spesifik saja; jalur GCP manual (3–4 pasangan titik PDF↔UTM) dicatat sebagai kandidat iterasi berikutnya, bukan kontrak iterasi ini.
+ 
+ ## 10. Risiko & Mitigasi
+ 
+ | Risiko | Mitigasi |
+ |---|---|
+-| Kalibrasi PDF tidak akurat (>3 m) | Gate 1 + fallback GCP manual; cross-check `bdr_*.zip` |
++| Kalibrasi PDF tidak akurat (>3 m) | Gate 1 + cross-check `bdr_*.zip`; fallback GCP manual **di-de-scope** (§9) — jalur gagal = pesan residual spesifik |
+ | App tidak mendukung export full-extent | Gate 0; alternatif boundary tunggal besar |
+ | Rasio kompresi nyata belum diketahui | Diukur pada Gate 2 sebelum batch (estimasi awal 30–60% untuk float) |
+ | Palet Pix4D tidak persis tertiru | Palet disampel dari `.rgb.tif` export lama; legend digenerate konsisten |
+diff --git a/requirements.txt b/requirements.txt
+index 425d3bd..9a15d83 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,9 +1,26 @@
+-flask>=3.1
+-rasterio>=1.5
+-pymupdf>=1.28
+-pillow>=12
+-numpy>=2.5
+-shapely>=2.2
+-pyshp>=3.1
+-tifffile>=2026
+-pytest>=8
++# Di-pin dari venv teruji (N-4, 2026-10-14) — reproduksi persis di mesin lain.
++# Paket utama: flask, rasterio, pymupdf, pillow, numpy, shapely, pyshp, tifffile, pytest.
++affine==3.0.1
++attrs==26.1.0
++blinker==1.9.0
++certifi==2026.7.22
++click==8.5.0
++colorama==0.4.6
++Flask==3.1.3
++iniconfig==2.3.1
++itsdangerous==2.2.0
++Jinja2==3.1.6
++MarkupSafe==3.0.4
++numpy==2.5.4
++packaging==26.3
++pillow==12.3.0
++pluggy==1.6.0
++Pygments==2.21.0
++pymupdf==1.28.2
++pyparsing==3.3.3
++pyshp==3.1.6
++pytest==9.1.1
++rasterio==1.5.2
++shapely==2.2.0
++tifffile==2026.9.20
++Werkzeug==3.1.9
+diff --git a/static/app.js b/static/app.js
+index b8afa2c..244d93d 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -28,7 +28,11 @@ async function pindai() {
+   tb.innerHTML = "";
+   for (const b of r.blok) {
+     const tr = document.createElement("tr");
+-    tr.innerHTML = `<td>${b.kode}</td><td>${b.divisi || "-"}</td><td>${b.luas_ha ?? ""}</td>`;
++    for (const v of [b.kode, b.divisi || "-", b.luas_ha ?? ""]) {
++      const cell = document.createElement("td");
++      cell.textContent = v;
++      tr.append(cell);
++    }
+     const td = document.createElement("td");
+     const inp = document.createElement("input");
+     inp.value = b.divisi || "";
+@@ -66,8 +70,12 @@ async function polling() {
+   for (const it of s.items) {
+     const tr = document.createElement("tr");
+     tr.style.background = warna(it.status);
+-    tr.innerHTML = `<td>${it.divisi} ${it.kode}</td><td>${it.layer}</td><td>${it.status}</td>` +
+-                   `<td>${(it.size / 1e6).toFixed(1)} MB</td><td>${it.error}</td>`;
++    for (const v of [`${it.divisi} ${it.kode}`, it.layer, it.status,
++                     `${(it.size / 1e6).toFixed(1)} MB`, it.error]) {
++      const cell = document.createElement("td");
++      cell.textContent = v ?? "";
++      tr.append(cell);
++    }
+     const td = document.createElement("td");
+     if (it.status === "gagal") {
+       const b = document.createElement("button");
+diff --git a/tests/test_app.py b/tests/test_app.py
+index 9426b35..42bb9fc 100644
+--- a/tests/test_app.py
++++ b/tests/test_app.py
+@@ -55,3 +55,160 @@ def test_api_kartu_buat_tanpa_output(monkeypatch):
+     c = aplikasi.app.test_client()
+     r = c.post("/api/kartu/buat")
+     assert r.status_code == 400 and r.get_json()["ok"] is False
++
++
++def _poligon(x0, y0, sisi):
++    return [[x0, y0], [x0 + sisi, y0], [x0 + sisi, y0 + sisi], [x0, y0 + sisi], [x0, y0]]
++
++
++def _siapkan_sumber_uji(tmp_path):
++    """Ortho 5-band 200×200 @5 m: bbox 100 ha, alpha separuh kanan nol → footprint 50 ha."""
++    import numpy as np
++    import rasterio
++    src = tmp_path / "sumber"
++    src.mkdir()
++    arr = np.full((5, 200, 200), 100.0, dtype="float32")
++    arr[4, :, 100:] = 0.0
++    with rasterio.open(src / "Orthomosaic.data.tif", "w", driver="GTiff", width=200,
++                       height=200, count=5, dtype="float32", crs="EPSG:32749",
++                       transform=rasterio.transform.from_origin(300000, 9960000, 5, 5)) as ds:
++        ds.write(arr)
++    with rasterio.open(src / "NDRE.data.tif", "w", driver="GTiff", width=20, height=20,
++                       count=1, dtype="float32", crs="EPSG:32749",
++                       transform=rasterio.transform.from_origin(300000, 9960000, 50, 50)) as ds:
++        ds.write(np.ones((1, 20, 20), dtype="float32"))
++    return src
++
++
++def _konfig_pindai(tmp_path, monkeypatch, features):
++    import json
++    import app as aplikasi
++    src = _siapkan_sumber_uji(tmp_path)
++    gj_path = tmp_path / "blok.geojson"
++    gj_path.write_text(json.dumps({"type": "FeatureCollection", "features": features}),
++                       encoding="utf-8")
++    for k, v in {"folder_sumber": str(src), "folder_output": str(tmp_path / "out"),
++                 "kode_flight": "TST01", "path_blok": str(gj_path)}.items():
++        monkeypatch.setattr(aplikasi.KONFIG, k, v)
++    return aplikasi, src
++
++
++def test_pindai_estimasi_berbasis_footprint(tmp_path, monkeypatch):
++    fitur = [
++        {"type": "Feature", "properties": {"kode": "D01", "divisi": "AME III", "luas_ha": 25.0},
++         "geometry": {"type": "Polygon", "coordinates": [_poligon(300000, 9959500, 500)]}},
++        {"type": "Feature", "properties": {"kode": "X99", "divisi": "LAIN", "luas_ha": 1000.0},
++         "geometry": {"type": "Polygon", "coordinates": [_poligon(400000, 9900000, 10000)]}},
++    ]
++    aplikasi, src = _konfig_pindai(tmp_path, monkeypatch, fitur)
++    c = aplikasi.app.test_client()
++    j = c.post("/api/pindai").get_json()
++    assert j["ok"] is True and j["n_blok"] == 1
++    byte_src = sum((src / n).stat().st_size for n in ("Orthomosaic.data.tif", "NDRE.data.tif"))
++    assert j["estimasi_byte"] == int(byte_src / 50.0 * 25.0 * 0.84)  # footprint 50 ha, blok 25 ha
++    lama = int(byte_src * (25.0 / 1025.0) * 0.6)                     # rumus lama: basis seluruh peta
++    assert j["estimasi_byte"] != lama
++    assert j["cukup_disk"] is True
++    monkeypatch.setattr(aplikasi, "_free_bytes", lambda p: 0)
++    j2 = c.post("/api/pindai").get_json()
++    assert j2["cukup_disk"] is False
++
++
++def test_pindai_daftar_blok_tidak_dipotong(tmp_path, monkeypatch):
++    fitur = []
++    n = 0
++    for baris in range(22):
++        for kolom in range(23):
++            n += 1
++            x, y = 300000 + kolom * 42, 9959000 + baris * 42
++            fitur.append({"type": "Feature",
++                          "properties": {"kode": f"K{n:03d}", "divisi": "UJI", "luas_ha": 0.18},
++                          "geometry": {"type": "Polygon", "coordinates": [_poligon(x, y, 40)]}})
++    aplikasi, _ = _konfig_pindai(tmp_path, monkeypatch, fitur)
++    c = aplikasi.app.test_client()
++    j = c.post("/api/pindai").get_json()
++    assert j["n_blok"] == n == 506
++    assert len(j["blok"]) == n
++
++
++# --- T-2 di level API: /api/jalankan ---
++
++def _konfig_jalankan(tmp_path, monkeypatch, nama_out="out_auto"):
++    fitur = [{"type": "Feature",
++              "properties": {"kode": "D01", "divisi": "AME III", "luas_ha": 25.0},
++              "geometry": {"type": "Polygon", "coordinates": [_poligon(300000, 9959500, 500)]}}]
++    aplikasi, src = _konfig_pindai(tmp_path, monkeypatch, fitur)
++    out = tmp_path / nama_out
++    for k, v in {"folder_output": str(out), "folder_log": str(tmp_path / "log"),
++                 "folder_palet": str(tmp_path / "palet")}.items():
++        monkeypatch.setattr(aplikasi.KONFIG, k, v)
++    return aplikasi, src, out
++
++
++def test_jalankan_tolak_folder_berisi_bukan_auto(tmp_path, monkeypatch):
++    import app as aplikasi
++    aplikasi, src, out = _konfig_jalankan(tmp_path, monkeypatch, nama_out="arsip_lama")
++    out.mkdir()
++    (out / "file_lama.tif").write_bytes(b"x")
++    c = aplikasi.app.test_client()
++    r = c.post("/api/jalankan")
++    assert r.status_code == 400 and "_auto" in r.get_json()["error"]
++
++
++def test_jalankan_tolak_state_flight_berbeda(tmp_path, monkeypatch):
++    import json
++    import app as aplikasi
++    aplikasi, src, out = _konfig_jalankan(tmp_path, monkeypatch)
++    out.mkdir()
++    (out / "state.json").write_text(json.dumps(
++        {"versi": 2, "kode_flight": "FLG01", "items": []}), encoding="utf-8")
++    monkeypatch.setattr(aplikasi.KONFIG, "kode_flight", "FLG02")
++    c = aplikasi.app.test_client()
++    r = c.post("/api/jalankan")
++    assert r.status_code == 400 and "FLG01" in r.get_json()["error"]
++
++
++def test_jalankan_batch_sintetis_via_api(tmp_path, monkeypatch):
++    import json
++    import app as aplikasi
++    aplikasi, src, out = _konfig_jalankan(tmp_path, monkeypatch)
++    c = aplikasi.app.test_client()
++    r = c.post("/api/jalankan")
++    assert r.status_code == 200 and r.get_json()["ok"] is True
++    rn = aplikasi.RUNNER["obj"]
++    rn._thread.join(timeout=60)
++    snap = rn.snapshot()
++    assert snap["aktif"] is False and snap["total"] == 2 and snap["selesai"] == 2
++    dir_blok = out / "AME III" / "TST01_AMEIII-D01"
++    dst = dir_blok / "Orthomosaic - TST01_AMEIII-D01.data.tif"
++    assert dst.exists() and dst.stat().st_size > 0
++    assert (dir_blok / "NDRE.data.tif").exists()
++    assert (dir_blok / "NDRE.rgb.tif").exists() and (dir_blok / "NDRE.legend.png").exists()
++    st = json.loads((out / "state.json").read_text(encoding="utf-8"))
++    assert st["versi"] == 2 and st["kode_flight"] == "TST01"
++    assert "D01" in st["geom_blok"]
++    j = c.get("/api/status").get_json()
++    assert "Batch" in j["log_tail"]                        # T-3: log run terbaca UI
++    aplikasi.RUNNER["obj"] = None
++
++
++def test_jalankan_lock_menolak_permintaan_bersamaan(tmp_path, monkeypatch):
++    import app as aplikasi
++    aplikasi, src, out = _konfig_jalankan(tmp_path, monkeypatch)
++    c = aplikasi.app.test_client()
++    assert aplikasi.JALANKAN_LOCK.acquire(blocking=False)  # simulasi request lain masih jalan
++    try:
++        r = c.post("/api/jalankan")
++    finally:
++        aplikasi.JALANKAN_LOCK.release()
++    assert r.status_code == 400 and "sedang diproses" in r.get_json()["error"]
++
++
++def test_port_bebas_habis_kembalikan_none(monkeypatch):
++    import app as aplikasi
++    class SS:
++        def __enter__(self): return self
++        def __exit__(self, *a): return False
++        def connect_ex(self, addr): return 0               # semua port "terpakai"
++    monkeypatch.setattr(aplikasi.socket, "socket", lambda *a, **k: SS())
++    assert aplikasi._port_bebas() is None
+diff --git a/tests/test_config.py b/tests/test_config.py
+index 689f855..1a931f1 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -10,7 +10,14 @@ def test_missing_file_kembali_default(tmp_path):
+     cfg = load_config(tmp_path / "belum_ada.json")
+     assert cfg.kode_flight == ""
+     assert cfg.pdf_peta.endswith("peta_blok.pdf")
+-    assert cfg.workers == 1
++    assert not hasattr(cfg, "workers")                    # N-5: field mati dihapus
++
++def test_config_lama_dengan_workers_tetap_dimuat(tmp_path):
++    p = tmp_path / "config.json"
++    p.write_text('{"kode_flight": "FLG09", "workers": 4}', encoding="utf-8")
++    cfg = load_config(p)
++    assert cfg.kode_flight == "FLG09"                     # field asing diabaikan
++    assert not hasattr(cfg, "workers")
+ 
+ def test_abaikan_field_asing(tmp_path):
+     p = tmp_path / "config.json"
+diff --git a/tests/test_crop_engine.py b/tests/test_crop_engine.py
+index 2cd8e15..22777d9 100644
+--- a/tests/test_crop_engine.py
++++ b/tests/test_crop_engine.py
+@@ -2,6 +2,7 @@ import numpy as np, rasterio
+ from pathlib import Path
+ from rasterio.transform import from_origin
+ from rasterio.windows import from_bounds
++from rasterio.enums import Resampling
+ from core import crop_engine
+ 
+ def _sumber(tmp_path):
+@@ -78,3 +79,45 @@ def test_proses_baris_copy_rgb_dan_legend(tmp_path):
+         inti = (slice(None), slice(8, -8), slice(8, -8))        # hindari piksel tepi mask
+         assert np.abs(out[inti].astype("int16") - asli[inti].astype("int16")).mean() < 8  # toleransi re-JPEG q85
+     assert (d / "NDRE.legend.png").read_bytes() == b"isi-legend-palsu"
++
++def test_crop_uint8_data_tif_dipaksa_deflate(tmp_path):
++    """N-2: sumber uint8 untuk berkas .data.tif tidak boleh di-JPEG (lossy) — paksa DEFLATE."""
++    t = from_origin(300000, 9960000, 1, 1)
++    src = tmp_path / "kelas_src.tif"
++    arr = np.random.default_rng(11).integers(1, 200, (1, 200, 200), dtype="uint8")
++    with rasterio.open(src, "w", driver="GTiff", width=200, height=200, count=1,
++                       dtype="uint8", crs="EPSG:32749", transform=t) as ds:
++        ds.write(arr)
++    geom = "POLYGON((300025 9959940, 300085 9959940, 300085 9959980, 300025 9959980, 300025 9959940))"
++    dst = tmp_path / "Kelas.data.tif"
++    crop_engine.crop_layer(src, geom, dst)
++    with rasterio.open(dst) as ds:
++        assert ds.profile.get("compress") == "deflate"
++        assert ds.dtypes[0] == "uint8"
++        out = ds.read(1)
++        win = from_bounds(*ds.bounds, transform=t).round_offsets().round_lengths()
++        win = rasterio.windows.Window(int(win.col_off), int(win.row_off), int(win.width), int(win.height))
++    with rasterio.open(src) as rs:
++        asli = rs.read(1, window=win)
++    m = out != 0                                          # 0 = nodata di luar poligon
++    assert m.any()
++    assert np.array_equal(out[m], asli[m])                # salinan eksak (lossless)
++
++def test_overview_data_tidak_membaurkan_nodata(tmp_path):
++    """N-3 (data): GDAL average menghormati nodata → overview tepi footprint bersih."""
++    t = from_origin(300000, 9960000, 1, 1)
++    src = tmp_path / "kelas_nodata.tif"
++    arr = np.full((1, 200, 200), -10000.0, "float32")
++    arr[:, 101:200, 101:200] = 7.5                        # batas ganjil → blok overview campuran
++    with rasterio.open(src, "w", driver="GTiff", width=200, height=200, count=1,
++                       dtype="float32", crs="EPSG:32749", transform=t,
++                       nodata=-10000.0) as ds:
++        ds.write(arr)
++    geom = "POLYGON((300099 9959801, 300199 9959801, 300199 9959901, 300099 9959901, 300099 9959801))"
++    dst = tmp_path / "Kelas2.data.tif"
++    crop_engine.crop_layer(src, geom, dst)
++    with rasterio.open(dst) as ds:
++        ov = ds.read(1, out_shape=(ds.height // 2, ds.width // 2),
++                     resampling=Resampling.nearest)
++    vals = set(np.unique(ov).tolist())
++    assert vals <= {-10000.0, 7.5}                        # tak ada nilai campuran di tepi
+diff --git a/tests/test_kartu.py b/tests/test_kartu.py
+index 32f305c..8689770 100644
+--- a/tests/test_kartu.py
++++ b/tests/test_kartu.py
+@@ -77,3 +77,32 @@ def test_kartu_dengan_shp_menghitung_iou(tmp_path):
+     assert k["iou"] is not None and k["iou"] > 99.0
+     assert k["kode_shp"] == "D013A"
+     assert abs(k["luas_shp_ha"] - 12.0) < 0.01
++
++
++def test_baris_konteks_dari_nilai_bukan_hardcode():
++    """R-2: footer kartu tidak lagi hardcode nilai flight uji."""
++    s = kartu._baris_konteks(5.28, 0.4913572)
++    assert s == ("konteks: residual kalibrasi PDF 0,49 m; GSD 5,28 cm/px; "
++                 "garis digambar apa adanya tanpa penyesuaian")
++    s2 = kartu._baris_konteks(3.0, None)                 # tanpa kalibrasi
++    assert s2 == ("konteks: GSD 3,00 cm/px; "
++                  "garis digambar apa adanya tanpa penyesuaian")
++
++
++def test_kartu_metadata_gsd_dan_residual(tmp_path):
++    """R-2: index.json memuat GSD ortho nyata + residual dari kalibrasi.json."""
++    out = _siapkan_output(tmp_path)
++    gj = _tulis_geojson(tmp_path / "blok.geojson", [{"kode": "D13", "divisi": "AME III"}])
++    kal = tmp_path / "kalibrasi.json"
++    kal.write_text(json.dumps({"residual_max_m": 0.123}), encoding="utf-8")
++    kartu.buat_kartu(str(out), str(gj), "TST01", dest=str(tmp_path / "kartu"),
++                     path_kalibrasi=str(kal))
++    idx = json.loads((tmp_path / "kartu" / "index.json").read_text(encoding="utf-8"))
++    k = idx["kartu"][0]
++    assert abs(k["gsd_cm"] - 100.0) < 0.01               # raster uji 1 m/px
++    assert abs(k["residual_m"] - 0.123) < 1e-9
++    idx2_dir = tmp_path / "kartu2"
++    kartu.buat_kartu(str(out), str(gj), "TST01", dest=str(idx2_dir),
++                     path_kalibrasi=str(tmp_path / "tidak_ada.json"))
++    k2 = json.loads((idx2_dir / "index.json").read_text(encoding="utf-8"))["kartu"][0]
++    assert k2["gsd_cm"] is not None and k2["residual_m"] is None
+diff --git a/tests/test_layer_scan.py b/tests/test_layer_scan.py
+index ea403c3..f2920c7 100644
+--- a/tests/test_layer_scan.py
++++ b/tests/test_layer_scan.py
+@@ -57,3 +57,67 @@ def test_rencana_output_naming():
+     assert Path(r1["dst_data"]).name == "NDRE.data.tif"
+     assert Path(r1["dst_rgb"]).name == "NDRE.rgb.tif"
+     assert Path(r1["dst_legend"]).name == "NDRE.legend.png"
++
++
++def _ortho(path, alpha_kanan_nol, h=200, w=200, res=5.0):
++    arr = np.full((5, h, w), 100.0, dtype="float32")
++    arr[4] = 255.0
++    if alpha_kanan_nol:
++        arr[4, :, w // 2:] = 0.0
++    with rasterio.open(path, "w", driver="GTiff", width=w, height=h, count=5,
++                       dtype="float32", crs="EPSG:32749",
++                       transform=rasterio.transform.from_origin(300000, 9960000, res, res)) as ds:
++        ds.write(arr)
++    return path
++
++
++def test_luas_footprint_ha_setengah_alpha(tmp_path):
++    """200×200 px @5 m = 100 ha bbox; separuh ber-alpha → footprint ±50 ha."""
++    p = _ortho(tmp_path / "ortho5.tif", alpha_kanan_nol=True)
++    assert abs(layer_scan.luas_footprint_ha(p) - 50.0) < 1.0
++
++
++def test_luas_footprint_ha_alpha_penuh(tmp_path):
++    p = _ortho(tmp_path / "ortho5.tif", alpha_kanan_nol=False)
++    assert abs(layer_scan.luas_footprint_ha(p) - 100.0) < 1.0
++
++
++def test_estimasi_byte_output_terkalibrasi_gate2():
++    """Angka Gate 2 (RINGKASAN): sumber 38.287.432.957 B, footprint 257,9 ha,
++    blok 197,63 ha → output nyata 24.708.559.348 B; toleransi ±15%."""
++    est = layer_scan.estimasi_byte_output(38_287_432_957, 197.63, 257.9)
++    nyata = 24_708_559_348
++    assert abs(est - nyata) / nyata < 0.15
++
++
++def test_estimasi_byte_output_tolak_footprint_nol():
++    with pytest.raises(ValueError):
++        layer_scan.estimasi_byte_output(1_000_000, 10.0, 0.0)
++
++
++# --- S-1: layer ber-footprint parsial → baris "dilewati" ---
++
++def _blok(kode="D01", x=300000, y=9960000, sisi=400):
++    return {"type": "Feature",
++            "properties": {"kode": kode, "divisi": "AME III", "luas_ha": 16.0},
++            "geometry": {"type": "Polygon",
++                         "coordinates": [[[x, y], [x + sisi, y], [x + sisi, y + sisi],
++                                          [x, y + sisi], [x, y]]]}}
++
++
++def test_rencana_output_layer_footprint_parsial_dilewati():
++    layers = {"ortho": {"data": "o.tif", "bounds": (300000, 9959000, 301000, 9961000)},
++              "ndre": {"data": "n.tif", "bounds": (305000, 9959000, 306000, 9961000)},
++              "dsm": {"data": "d.tif", "bounds": (300200, 9960000, 300300, 9960100)}}  # parsial → tetap proses
++    rows = layer_scan.rencana_output([_blok()], layers, r"F:\\keluar", "FLG03")
++    st = {(r["layer"]): r.get("status", "pending") for r in rows}
++    assert st == {"ortho": "pending", "ndre": "dilewati", "dsm": "pending"}
++    r_ndre = [r for r in rows if r["layer"] == "ndre"][0]
++    assert "di luar cakupan" in r_ndre["error"]
++
++
++def test_rencana_output_tanpa_bounds_tetap_pending():
++    """Layer tanpa info bounds (mis. hasil scan lama) dianggap mencakup — tidak dilewati."""
++    layers = {"ortho": {"data": "o.tif"}, "ndre": {"data": "n.tif"}}
++    rows = layer_scan.rencana_output([_blok()], layers, r"F:\\keluar", "FLG03")
++    assert all(r.get("status", "pending") == "pending" for r in rows)
+diff --git a/tests/test_runner.py b/tests/test_runner.py
+index 35c9ed4..74e65c1 100644
+--- a/tests/test_runner.py
++++ b/tests/test_runner.py
+@@ -1,4 +1,5 @@
+ from pathlib import Path
++import json
+ from core.runner import Runner
+ 
+ def _baris(tmp_path, n=3):
+@@ -10,6 +11,13 @@ def _baris(tmp_path, n=3):
+                      "dst_data": str(d / "NDRE.data.tif"), "dst_rgb": None, "dst_legend": None})
+     return rows
+ 
++def _crop_ok(row, calls=None, ukuran=10):
++    if calls is not None:
++        calls.append(row["kode"])
++    Path(row["dst_data"]).parent.mkdir(parents=True, exist_ok=True)
++    Path(row["dst_data"]).write_bytes(b"x" * ukuran)
++    return {"piksel": 1, "ukuran": ukuran}
++
+ def test_sukses_dan_csv(tmp_path):
+     rows = _baris(tmp_path)
+     def crop(row):
+@@ -78,3 +86,138 @@ def test_disk_penuh_hentikan_batch(tmp_path):
+     r.run()
+     snap = {it["kode"]: it["status"] for it in r.snapshot()["items"]}
+     assert snap["B00"] == "selesai" and snap["B01"] == "gagal" and snap["B02"] == "pending"
++
++
++# --- T-2: resume aman (verifikasi file + kode flight) ---
++
++def test_resume_verifikasi_file_hilang_diulang(tmp_path):
++    rows = _baris(tmp_path)
++    calls = []
++    crop = lambda row: _crop_ok(row, calls, ukuran=10)
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    Path(rows[1]["dst_data"]).unlink()                    # file B01 hilang
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    assert calls == ["B00", "B01", "B02", "B01"]
++
++def test_resume_ukuran_beda_diulang(tmp_path):
++    rows = _baris(tmp_path, 1)
++    calls = []
++    crop = lambda row: _crop_ok(row, calls, ukuran=10)
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    Path(rows[0]["dst_data"]).write_bytes(b"xx")          # ukuran file berubah
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    assert calls == ["B00", "B00"]
++
++def test_resume_rgb_hilang_diulang(tmp_path):
++    rows = _baris(tmp_path, 1)
++    rows[0]["dst_rgb"] = str(Path(rows[0]["dst_dir"]) / "NDRE.rgb.tif")
++    calls = []
++    def crop(row):
++        calls.append(row["kode"])
++        Path(row["dst_data"]).parent.mkdir(parents=True, exist_ok=True)
++        Path(row["dst_data"]).write_bytes(b"x")
++        Path(row["dst_rgb"]).write_bytes(b"r")
++        return {"piksel": 1, "ukuran": 1}
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    Path(rows[0]["dst_rgb"]).unlink()
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    assert calls == ["B00", "B00"]
++
++def test_resume_kode_flight_berbeda_diabaikan(tmp_path):
++    rows = _baris(tmp_path)
++    calls = []
++    crop = lambda row: _crop_ok(row, calls, ukuran=4)
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop, kode_flight="FLG01").run()
++    calls.clear()
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop, kode_flight="FLG02").run()
++    assert calls == ["B00", "B01", "B02"]                 # resume diabaikan → semua ulang
++
++
++# --- N-1: state v2 (geom sekali per blok) & snapshot ramping ---
++
++def test_state_v2_geom_sekali_per_blok(tmp_path):
++    rows = _baris(tmp_path, 1)
++    rows[0]["geom"] = "POLYGON ((0 0, 1 0, 1 1, 0 0))"
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=_crop_ok,
++           kode_flight="FLG01").run()
++    data = json.loads((tmp_path / "out" / "state.json").read_text(encoding="utf-8"))
++    assert data["versi"] == 2
++    assert data["kode_flight"] == "FLG01"
++    assert data["geom_blok"]["B00"] == "POLYGON ((0 0, 1 0, 1 1, 0 0))"
++    assert all("geom" not in it for it in data["items"])
++
++def test_snapshot_tanpa_geom(tmp_path):
++    rows = _baris(tmp_path, 1)
++    rows[0]["geom"] = "POLYGON ((0 0, 1 0, 1 1, 0 0))"
++    r = Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=_crop_ok)
++    r.run()
++    assert "geom" not in r.snapshot()["items"][0]
++
++def test_resume_memulihkan_geom_dari_geom_blok(tmp_path):
++    """Item yang belum jalan harus tetap mendapat geom saat resume dari state v2."""
++    rows = _baris(tmp_path, 1)
++    rows[0]["geom"] = "POLYGON ((0 0, 1 0, 1 1, 0 0))"
++    def crop_gagal(row):
++        raise RuntimeError("gagal sengaja")
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop_gagal,
++           kode_flight="FLG01").run()
++    rows2 = _baris(tmp_path, 1)                            # tanpa geom, seperti _bangun_rows lain
++    r2 = Runner(rows2, tmp_path / "out", tmp_path / "log", crop_fn=_crop_ok,
++                kode_flight="FLG01")
++    r2._muat_state()
++    assert r2.items[0].geom == "POLYGON ((0 0, 1 0, 1 1, 0 0))"
++
++
++# --- S-1: baris "dilewati (tanpa data)" tidak diproses ---
++
++def test_runner_melewati_baris_status_dilewati(tmp_path):
++    rows = _baris(tmp_path, 2)
++    rows[1]["status"] = "dilewati"
++    rows[1]["error"] = "tanpa data (di luar cakupan layer)"
++    calls = []
++    crop = lambda row: _crop_ok(row, calls)
++    r = Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop)
++    r.run()
++    assert calls == ["B00"]
++    snap = r.snapshot()
++    assert snap["dilewati"] == 1 and snap["selesai"] == 1 and snap["gagal"] == 0
++    csv = (tmp_path / "out" / "hasil_per_blok.csv").read_text(encoding="utf-8")
++    assert "dilewati" in csv and "B01" in csv
++
++def test_resume_dilewati_tanpa_file_tetap_dilewati(tmp_path):
++    rows = _baris(tmp_path, 2)
++    rows[1]["status"] = "dilewati"
++    rows[1]["error"] = "tanpa data (di luar cakupan layer)"
++    calls = []
++    crop = lambda row: _crop_ok(row, calls)
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    calls.clear()
++    Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop).run()
++    assert calls == []                                    # B00 resume, B01 tetap dilewati
++    r2 = Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop)
++    r2._muat_state()
++    st = {it.kode: it.status for it in r2.items}
++    assert st == {"B00": "selesai", "B01": "dilewati"}
++
++
++# --- T-3: retry() membuat file log baru ---
++
++def test_retry_ulang_membuat_file_log_baru(tmp_path):
++    rows = _baris(tmp_path, 1)
++    n = {"n": 0}
++    def crop(row):
++        n["n"] += 1
++        if n["n"] <= 2:                                   # gagal di percobaan + retry otomatis
++            raise RuntimeError("gagal sengaja")
++        return _crop_ok(row)
++    r = Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=crop)
++    r.run()
++    log1 = Path(r.log_path)
++    assert log1.exists() and {it.status for it in r.items} == {"gagal"}
++    r.retry("B00")                                        # tombol "Coba ulang" di UI
++    r._thread.join(timeout=20)
++    assert {it.kode: it.status for it in r.items}["B00"] == "selesai"
++    log2 = Path(r.log_path)
++    assert log2 != log1 and log2.exists()
++    assert "selesai" in log2.read_text(encoding="utf-8")
++    assert log1.exists()                                  # log run pertama utuh
+
+## git status --short
+
+ M .gitignore
+ M app.py
+ M core/config.py
+ M core/crop_engine.py
+ M core/kartu.py
+ M core/layer_scan.py
+ M core/runner.py
+ M docs/superpowers/specs/2026-10-13-ekspor-blok-otomatis-design.md
+ M requirements.txt
+ M static/app.js
+ M tests/test_app.py
+ M tests/test_config.py
+ M tests/test_crop_engine.py
+ M tests/test_kartu.py
+ M tests/test_layer_scan.py
+ M tests/test_runner.py
+?? laporan/

@@ -57,3 +57,67 @@ def test_rencana_output_naming():
     assert Path(r1["dst_data"]).name == "NDRE.data.tif"
     assert Path(r1["dst_rgb"]).name == "NDRE.rgb.tif"
     assert Path(r1["dst_legend"]).name == "NDRE.legend.png"
+
+
+def _ortho(path, alpha_kanan_nol, h=200, w=200, res=5.0):
+    arr = np.full((5, h, w), 100.0, dtype="float32")
+    arr[4] = 255.0
+    if alpha_kanan_nol:
+        arr[4, :, w // 2:] = 0.0
+    with rasterio.open(path, "w", driver="GTiff", width=w, height=h, count=5,
+                       dtype="float32", crs="EPSG:32749",
+                       transform=rasterio.transform.from_origin(300000, 9960000, res, res)) as ds:
+        ds.write(arr)
+    return path
+
+
+def test_luas_footprint_ha_setengah_alpha(tmp_path):
+    """200×200 px @5 m = 100 ha bbox; separuh ber-alpha → footprint ±50 ha."""
+    p = _ortho(tmp_path / "ortho5.tif", alpha_kanan_nol=True)
+    assert abs(layer_scan.luas_footprint_ha(p) - 50.0) < 1.0
+
+
+def test_luas_footprint_ha_alpha_penuh(tmp_path):
+    p = _ortho(tmp_path / "ortho5.tif", alpha_kanan_nol=False)
+    assert abs(layer_scan.luas_footprint_ha(p) - 100.0) < 1.0
+
+
+def test_estimasi_byte_output_terkalibrasi_gate2():
+    """Angka Gate 2 (RINGKASAN): sumber 38.287.432.957 B, footprint 257,9 ha,
+    blok 197,63 ha → output nyata 24.708.559.348 B; toleransi ±15%."""
+    est = layer_scan.estimasi_byte_output(38_287_432_957, 197.63, 257.9)
+    nyata = 24_708_559_348
+    assert abs(est - nyata) / nyata < 0.15
+
+
+def test_estimasi_byte_output_tolak_footprint_nol():
+    with pytest.raises(ValueError):
+        layer_scan.estimasi_byte_output(1_000_000, 10.0, 0.0)
+
+
+# --- S-1: layer ber-footprint parsial → baris "dilewati" ---
+
+def _blok(kode="D01", x=300000, y=9960000, sisi=400):
+    return {"type": "Feature",
+            "properties": {"kode": kode, "divisi": "AME III", "luas_ha": 16.0},
+            "geometry": {"type": "Polygon",
+                         "coordinates": [[[x, y], [x + sisi, y], [x + sisi, y + sisi],
+                                          [x, y + sisi], [x, y]]]}}
+
+
+def test_rencana_output_layer_footprint_parsial_dilewati():
+    layers = {"ortho": {"data": "o.tif", "bounds": (300000, 9959000, 301000, 9961000)},
+              "ndre": {"data": "n.tif", "bounds": (305000, 9959000, 306000, 9961000)},
+              "dsm": {"data": "d.tif", "bounds": (300200, 9960000, 300300, 9960100)}}  # parsial → tetap proses
+    rows = layer_scan.rencana_output([_blok()], layers, r"F:\\keluar", "FLG03")
+    st = {(r["layer"]): r.get("status", "pending") for r in rows}
+    assert st == {"ortho": "pending", "ndre": "dilewati", "dsm": "pending"}
+    r_ndre = [r for r in rows if r["layer"] == "ndre"][0]
+    assert "di luar cakupan" in r_ndre["error"]
+
+
+def test_rencana_output_tanpa_bounds_tetap_pending():
+    """Layer tanpa info bounds (mis. hasil scan lama) dianggap mencakup — tidak dilewati."""
+    layers = {"ortho": {"data": "o.tif"}, "ndre": {"data": "n.tif"}}
+    rows = layer_scan.rencana_output([_blok()], layers, r"F:\\keluar", "FLG03")
+    assert all(r.get("status", "pending") == "pending" for r in rows)

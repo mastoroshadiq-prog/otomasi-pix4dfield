@@ -11,7 +11,6 @@ class AppConfig:
     pdf_peta: str = str(ROOT / "data" / "sumber" / "peta_blok.pdf")
     kode_flight: str = ""
     shp_kebun: str = r"E:\2. Tanam Inti\2_Tanam_Inti.shp"
-    workers: int = 1
     port: int = 0
     path_kalibrasi: str = str(ROOT / "data" / "kalibrasi.json")
     path_blok: str = str(ROOT / "data" / "blok.geojson")

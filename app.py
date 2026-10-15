@@ -12,6 +12,7 @@ app = Flask(__name__)
 KONFIG = cfg_mod.load_config()
 RUNNER = {"obj": None}
 KARTU = {"status": None}
+JALANKAN_LOCK = threading.Lock()
 
 
 def _port_bebas(mulai=5000, akhir=5050):
@@ -19,7 +20,7 @@ def _port_bebas(mulai=5000, akhir=5050):
         with socket.socket() as s:
             if s.connect_ex(("127.0.0.1", p)) != 0:
                 return p
-    return 0
+    return None
 
 
 def _free_bytes(path):
@@ -69,10 +70,10 @@ def _bangun_rows():
     wkt_map = {f["properties"]["kode"]: shape(f["geometry"]).wkt for f in blok}
     for r in rows:
         r["geom"] = wkt_map[r["kode"]]
-    luas_semua = sum(f["properties"]["luas_ha"] for f in gj["features"]) or 1.0
     luas_blok = sum(f["properties"]["luas_ha"] for f in blok)
     ukuran_src = sum(Path(v["data"]).stat().st_size for v in hasil["layers"].values())
-    estimasi = int(ukuran_src * (luas_blok / luas_semua) * 0.6)   # faktor konservatif vs rekompresi
+    luas_fp = layer_scan.luas_footprint_ha(hasil["layers"]["ortho"]["data"])
+    estimasi = layer_scan.estimasi_byte_output(ukuran_src, luas_blok, luas_fp)
     kal = None
     kal_path = Path(KONFIG.path_kalibrasi)
     if kal_path.exists():
@@ -144,26 +145,44 @@ def pindai():
                     "ditolak": info["ditolak"], "n_baris": len(info["rows"]),
                     "estimasi_byte": info["estimasi_byte"], "disk_bebas_byte": bebas,
                     "cukup_disk": bebas > info["estimasi_byte"] * 1.2,
-                    "blok": info["blok"][:500], "kalibrasi": info["kalibrasi"]})
+                    "blok": info["blok"], "kalibrasi": info["kalibrasi"]})
 
 
 @app.post("/api/jalankan")
 def jalankan():
-    if RUNNER["obj"] and RUNNER["obj"].snapshot()["aktif"]:
-        return jsonify({"ok": False, "error": "Batch sedang berjalan"}), 400
+    if not JALANKAN_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "Permintaan lain sedang diproses"}), 400
     try:
-        info = _bangun_rows()
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    bebas = _free_bytes(KONFIG.folder_output)
-    if bebas < info["estimasi_byte"] * 1.2:
-        return jsonify({"ok": False, "error": "Ruang disk tidak cukup: estimasi %.1f GB, bebas %.1f GB"
-                        % (info["estimasi_byte"] / 1e9, bebas / 1e9)}), 400
-    r = Runner(info["rows"], KONFIG.folder_output, KONFIG.folder_log,
-               folder_palet=KONFIG.folder_palet)
-    RUNNER["obj"] = r
-    r.start()
-    return jsonify({"ok": True})
+        if RUNNER["obj"] and RUNNER["obj"].snapshot()["aktif"]:
+            return jsonify({"ok": False, "error": "Batch sedang berjalan"}), 400
+        out = Path(KONFIG.folder_output)
+        if out.exists() and any(out.iterdir()) and not out.name.endswith("_auto"):
+            return jsonify({"ok": False, "error":
+                            "Folder output sudah berisi dan bukan folder baru '_auto' — "
+                            "pilih folder output baru agar arsip lama tidak tertimpa"}), 400
+        st_path = out / "state.json"
+        if st_path.exists():
+            st = json.loads(st_path.read_text(encoding="utf-8"))
+            if st.get("versi", 1) >= 2 and st.get("kode_flight") and st["kode_flight"] != KONFIG.kode_flight:
+                return jsonify({"ok": False, "error":
+                                f"Folder output berisi hasil flight '{st['kode_flight']}' — "
+                                f"kode flight sekarang '{KONFIG.kode_flight}'. "
+                                "Ganti folder output atau kode flight"}), 400
+        try:
+            info = _bangun_rows()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        bebas = _free_bytes(KONFIG.folder_output)
+        if bebas < info["estimasi_byte"] * 1.2:
+            return jsonify({"ok": False, "error": "Ruang disk tidak cukup: estimasi %.1f GB, bebas %.1f GB"
+                            % (info["estimasi_byte"] / 1e9, bebas / 1e9)}), 400
+        r = Runner(info["rows"], KONFIG.folder_output, KONFIG.folder_log,
+                   folder_palet=KONFIG.folder_palet, kode_flight=KONFIG.kode_flight)
+        RUNNER["obj"] = r
+        r.start()
+        return jsonify({"ok": True})
+    finally:
+        JALANKAN_LOCK.release()
 
 
 @app.get("/api/status")
@@ -267,6 +286,7 @@ def api_kartu_buat():
             hasil = kartu_mod.buat_kartu(
                 KONFIG.folder_output, KONFIG.path_blok, KONFIG.kode_flight,
                 path_shp=KONFIG.shp_kebun or None,
+                path_kalibrasi=KONFIG.path_kalibrasi or None,
                 progress=lambda i, n, k: KARTU["status"].update({"i": i, "n": n, "pesan": k}))
             KARTU["status"].update({"aktif": False, "selesai": hasil["kartu"],
                                     "dilewati": hasil["dilewati"], "dest": hasil["dest"]})
@@ -284,5 +304,7 @@ def api_kartu_status():
 
 if __name__ == "__main__":
     port = KONFIG.port or _port_bebas()
+    if port is None:
+        raise SystemExit("Tidak ada port bebas di 127.0.0.1:5000-5049 — tutup aplikasi lain lalu coba lagi")
     threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     app.run(host="127.0.0.1", port=port, debug=False)
