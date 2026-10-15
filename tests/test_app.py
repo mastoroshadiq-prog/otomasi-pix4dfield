@@ -212,3 +212,49 @@ def test_port_bebas_habis_kembalikan_none(monkeypatch):
         def connect_ex(self, addr): return 0               # semua port "terpakai"
     monkeypatch.setattr(aplikasi.socket, "socket", lambda *a, **k: SS())
     assert aplikasi._port_bebas() is None
+
+
+# --- /api/pilih: dialog native Windows (tkinter) ---
+
+def test_pilih_sukses_dan_normalisasi_path(monkeypatch):
+    import app as aplikasi
+    dipanggil = {}
+    def dialog_uji(jenis, nilai):
+        dipanggil["jenis"], dipanggil["nilai"] = jenis, nilai
+        return "F:/dataset/Pix4DField-export-FLG01_auto"   # tkinter memakai garis miring
+    monkeypatch.setattr(aplikasi, "_dialog_pilih", dialog_uji)
+    c = aplikasi.app.test_client()
+    r = c.post("/api/pilih", json={"jenis": "folder", "nilai": "F:\\dataset"})
+    assert r.status_code == 200
+    assert r.get_json() == {"ok": True, "path": "F:\\dataset\\Pix4DField-export-FLG01_auto"}
+    assert dipanggil == {"jenis": "folder", "nilai": "F:\\dataset"}
+
+
+def test_pilih_batal_mengembalikan_null(monkeypatch):
+    import app as aplikasi
+    monkeypatch.setattr(aplikasi, "_dialog_pilih", lambda jenis, nilai: "")
+    c = aplikasi.app.test_client()
+    j = c.post("/api/pilih", json={"jenis": "pdf", "nilai": ""}).get_json()
+    assert j == {"ok": True, "path": None}
+
+
+def test_pilih_jenis_tak_dikenal_tanpa_buka_dialog(monkeypatch):
+    import app as aplikasi
+    def jangan_dipanggil(jenis, nilai):
+        raise AssertionError("dialog tidak boleh dibuka untuk jenis tak dikenal")
+    monkeypatch.setattr(aplikasi, "_dialog_pilih", jangan_dipanggil)
+    c = aplikasi.app.test_client()
+    r = c.post("/api/pilih", json={"jenis": "folder_rahasia"})
+    assert r.status_code == 400 and r.get_json()["ok"] is False
+
+
+def test_pilih_dialog_gagal_dilaporkan(monkeypatch):
+    import app as aplikasi
+    def dialog_gagal(jenis, nilai):
+        raise RuntimeError("tanpa layar")
+    monkeypatch.setattr(aplikasi, "_dialog_pilih", dialog_gagal)
+    c = aplikasi.app.test_client()
+    r = c.post("/api/pilih", json={"jenis": "shp", "nilai": ""})
+    assert r.status_code == 500
+    j = r.get_json()
+    assert j["ok"] is False and "tanpa layar" in j["error"]

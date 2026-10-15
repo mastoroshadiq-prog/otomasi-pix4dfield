@@ -13,6 +13,13 @@ KONFIG = cfg_mod.load_config()
 RUNNER = {"obj": None}
 KARTU = {"status": None}
 JALANKAN_LOCK = threading.Lock()
+PILIH_LOCK = threading.Lock()
+
+_JENIS_PILIH = {
+    "folder": ("Pilih folder", None),
+    "pdf": ("Pilih peta blok PDF", [("Peta PDF", "*.pdf"), ("Semua berkas", "*.*")]),
+    "shp": ("Pilih shapefile kebun", [("Shapefile", "*.shp"), ("Semua berkas", "*.*")]),
+}
 
 
 def _port_bebas(mulai=5000, akhir=5050):
@@ -28,6 +35,32 @@ def _free_bytes(path):
     while not p.exists() and p.parent != p:
         p = p.parent
     return shutil.disk_usage(str(p)).free
+
+
+def _folder_awal(nilai):
+    """Folder awal dialog: path yang ada terdekat dari nilai lama ('' bila tak ada)."""
+    p = Path(nilai) if nilai else None
+    while p and not p.exists() and p.parent != p:
+        p = p.parent
+    return str(p) if p and p.exists() else ""
+
+
+def _dialog_pilih(jenis, nilai):
+    """Dialog native Windows (tkinter). Return path terpilih, '' bila dibatalkan."""
+    import tkinter as tk
+    from tkinter import filedialog
+    judul, tipe = _JENIS_PILIH[jenis]
+    awal = _folder_awal(nilai)
+    akar = tk.Tk()
+    akar.withdraw()
+    akar.attributes("-topmost", True)
+    try:
+        if jenis == "folder":
+            return filedialog.askdirectory(parent=akar, title=judul, initialdir=awal or None) or ""
+        return filedialog.askopenfilename(parent=akar, title=judul, initialdir=awal or None,
+                                          filetypes=tipe) or ""
+    finally:
+        akar.destroy()
 
 
 def _muat_geojson():
@@ -105,6 +138,20 @@ def post_config():
             setattr(KONFIG, f.name, data[f.name])
     cfg_mod.save_config(KONFIG)
     return jsonify({"ok": True})
+
+
+@app.post("/api/pilih")
+def api_pilih():
+    data = request.get_json(force=True, silent=True) or {}
+    jenis = data.get("jenis", "")
+    if jenis not in _JENIS_PILIH:
+        return jsonify({"ok": False, "error": "Jenis pilihan tidak dikenal"}), 400
+    try:
+        with PILIH_LOCK:
+            hasil = _dialog_pilih(jenis, str(data.get("nilai") or ""))
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Dialog gagal dibuka: {e}"}), 500
+    return jsonify({"ok": True, "path": str(Path(hasil)) if hasil else None})
 
 
 @app.get("/api/blok")

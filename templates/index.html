@@ -2,62 +2,157 @@
 <html lang="id">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ekspor Blok Otomatis — Pix4DField</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<h1>Ekspor Blok Otomatis — Pix4DField</h1>
+<div class="app">
 
-<section class="kartu" id="tahap-setup">
-  <h2>1. Setup</h2>
-  <label>Folder sumber (hasil ekspor full-extent dari app): <input id="folder_sumber" size="60"></label>
-  <label>Folder output (BARU, mis. F:\dataset\Pix4DField-export-FLG03_auto): <input id="folder_output" size="60"></label>
-  <label>Peta blok PDF: <input id="pdf_peta" size="60"></label>
-  <label>Kode flight (mis. FLG03): <input id="kode_flight" size="10"></label>
-  <label>Shp kebun Tanam Inti (pembanding kartu validasi): <input id="shp_kebun" size="60"></label>
-  <button id="btn-simpan">Simpan Konfigurasi</button>
-  <span id="status-simpan"></span>
-</section>
+  <aside class="sisi">
+    <div class="merek">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="3" y="3" width="7.5" height="7.5" rx="1.8"/>
+        <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.8"/>
+        <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.8"/>
+        <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.8"/>
+      </svg>
+      <div class="merek-teks">
+        <strong>Ekspor Blok Otomatis</strong>
+        <span>Pix4DField</span>
+      </div>
+    </div>
 
-<section class="kartu" id="tahap-pindai">
-  <h2>2. Pindai (dry-run)</h2>
-  <button id="btn-pindai">Pindai Folder Sumber</button>
-  <div id="hasil-pindai"></div>
-  <table id="tabel-blok">
-    <thead><tr><th>Kode</th><th>Divisi</th><th>Luas (ha)</th><th>Koreksi divisi</th></tr></thead>
-    <tbody></tbody>
-  </table>
-</section>
+    <nav class="nav" aria-label="Tahapan">
+      <button class="nav-item aktif" type="button" data-tahap="setup" aria-current="step">
+        <span class="nav-no">1</span>
+        <span class="nav-teks">Setup<span class="nav-badge b-idle" id="badge-setup">0/5 terisi</span></span>
+      </button>
+      <button class="nav-item" type="button" data-tahap="pindai">
+        <span class="nav-no">2</span>
+        <span class="nav-teks">Pindai<span class="nav-badge b-idle" id="badge-pindai">belum</span></span>
+      </button>
+      <button class="nav-item" type="button" data-tahap="jalankan">
+        <span class="nav-no">3</span>
+        <span class="nav-teks">Jalankan<span class="nav-badge b-idle" id="badge-jalankan">belum</span></span>
+      </button>
+      <button class="nav-item" type="button" data-tahap="validasi">
+        <span class="nav-no">4</span>
+        <span class="nav-teks">Validasi<span class="nav-badge b-idle" id="badge-validasi">belum</span></span>
+      </button>
+    </nav>
 
-<section class="kartu" id="tahap-jalankan">
-  <h2>3. Jalankan</h2>
-  <button id="btn-jalankan">Jalankan Ekspor</button>
-  <button id="btn-batalkan">Batalkan</button>
-  <button id="btn-buka">Buka Folder Hasil</button>
-  <a id="unduh-csv" href="/api/unduh/hasil">Unduh CSV</a>
-  &nbsp;<a id="unduh-log" href="/api/unduh/log">Unduh Log</a>
-  <div>Progress: <span id="progress-teks">0/0</span></div>
-  <div id="progress-bar"><div id="progress-isi"></div></div>
-  <table id="tabel-status">
-    <thead><tr><th>Blok</th><th>Layer</th><th>Status</th><th>Ukuran</th><th>Error</th><th></th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <pre id="log"></pre>
-</section>
+    <div class="kaki">
+      <div class="jalur" id="jalur-output" title="">—</div>
+      <div class="jalur" id="jalur-flight">Flight —</div>
+      <button class="btn-tema" id="btn-tema" type="button" title="Ganti tema terang/gelap">
+        <svg id="ikon-gelap" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        <svg id="ikon-terang" class="sembunyi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <span id="teks-tema">Mode gelap</span>
+      </button>
+    </div>
+  </aside>
 
-<section class="kartu" id="tahap-validasi">
-  <h2>4. Validasi</h2>
-  <p class="hint">Kartu per blok: citra hasil crop + batas PDF (merah, dipakai crop)
-     vs shp Tanam Inti (biru). Klik kartu untuk tampilan besar:
-     panah ‹ › atau tombol ← → pindah blok, scroll untuk zoom, geser untuk pan, Esc tutup.</p>
-  <button id="btn-kartu-buat">Buat/Perbarui Kartu Validasi</button>
-  <span id="status-kartu"></span>
-  <div id="galeri-kartu"></div>
-</section>
+  <main class="isi">
+    <header class="bar">
+      <h1 id="judul-tahap">1 · Setup</h1>
+      <span class="ringkas" id="ringkas-status">Belum dipindai</span>
+    </header>
+
+    <section class="panel" id="tahap-setup" aria-label="Tahap 1: Setup">
+      <div class="grid-field">
+        <label class="baris-field lebar">Folder sumber (hasil ekspor full-extent dari app)
+          <span class="isian-baris">
+            <input id="folder_sumber" spellcheck="false">
+            <button class="btn btn-sekunder btn-kecil btn-telusuri" type="button"
+                    data-sasaran="folder_sumber" data-jenis="folder">Telusuri…</button>
+          </span>
+          <span class="petunjuk">Contoh: F:\dataset\Pix4DField-export-Fligh01\AME III - Test OtoExport</span>
+        </label>
+        <label class="baris-field lebar">Folder output (BARU, mis. F:\dataset\Pix4DField-export-FLG03_auto)
+          <span class="isian-baris">
+            <input id="folder_output" spellcheck="false">
+            <button class="btn btn-sekunder btn-kecil btn-telusuri" type="button"
+                    data-sasaran="folder_output" data-jenis="folder">Telusuri…</button>
+          </span>
+          <span class="petunjuk">Selalu folder baru — arsip hasil lama tidak pernah ditimpa.</span>
+        </label>
+        <label class="baris-field">Peta blok PDF
+          <span class="isian-baris">
+            <input id="pdf_peta" spellcheck="false">
+            <button class="btn btn-sekunder btn-kecil btn-telusuri" type="button"
+                    data-sasaran="pdf_peta" data-jenis="pdf">Telusuri…</button>
+          </span>
+        </label>
+        <label class="baris-field sempit">Kode flight (mis. FLG03)
+          <input id="kode_flight" spellcheck="false">
+        </label>
+        <label class="baris-field lebar">Shp kebun Tanam Inti (pembanding kartu validasi)
+          <span class="isian-baris">
+            <input id="shp_kebun" spellcheck="false">
+            <button class="btn btn-sekunder btn-kecil btn-telusuri" type="button"
+                    data-sasaran="shp_kebun" data-jenis="shp">Telusuri…</button>
+          </span>
+          <span class="petunjuk">Opsional — dipakai hanya oleh kartu validasi tahap 4.</span>
+        </label>
+      </div>
+      <div class="galat sembunyi" id="galat-pilih"></div>
+      <div class="aksi">
+        <button class="btn btn-utama" id="btn-simpan" type="button">Simpan Konfigurasi</button>
+        <span class="status-aksi" id="status-simpan"></span>
+      </div>
+    </section>
+
+    <section class="panel sembunyi" id="tahap-pindai" aria-label="Tahap 2: Pindai">
+      <p class="petunjuk">Pindai hanya membaca folder sumber — tidak ada berkas yang diubah.</p>
+      <div class="aksi">
+        <button class="btn btn-utama" id="btn-pindai" type="button">Pindai Folder Sumber</button>
+      </div>
+      <div class="kotak-info" id="hasil-pindai"></div>
+      <table id="tabel-blok">
+        <thead><tr><th>Kode</th><th>Divisi</th><th>Luas (ha)</th><th>Koreksi divisi</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel sembunyi" id="tahap-jalankan" aria-label="Tahap 3: Jalankan">
+      <div class="galat sembunyi" id="galat-jalankan"></div>
+      <div class="aksi">
+        <button class="btn btn-utama" id="btn-jalankan" type="button">Jalankan Ekspor</button>
+        <button class="btn btn-bahaya" id="btn-batalkan" type="button">Batalkan</button>
+        <button class="btn btn-sekunder" id="btn-buka" type="button">Buka Folder Hasil</button>
+        <a class="tautan" id="unduh-csv" href="/api/unduh/hasil">Unduh CSV</a>
+        <a class="tautan" id="unduh-log" href="/api/unduh/log">Unduh Log</a>
+      </div>
+      <div class="progres-baris">
+        <span>Progress ekspor</span>
+        <span id="progress-teks">0/0</span>
+      </div>
+      <div id="progress-bar"><div id="progress-isi"></div></div>
+      <table id="tabel-status">
+        <thead><tr><th>Blok</th><th>Layer</th><th>Status</th><th>Ukuran</th><th>Error</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <pre id="log"></pre>
+    </section>
+
+    <section class="panel sembunyi" id="tahap-validasi" aria-label="Tahap 4: Validasi">
+      <p class="petunjuk">Kartu per blok: citra hasil crop + batas PDF (merah, dipakai crop) vs shp
+         Tanam Inti (biru). Klik kartu untuk tampilan besar: panah ‹ › atau tombol ← → pindah blok,
+         scroll untuk zoom, geser untuk pan, Esc tutup.</p>
+      <div class="aksi">
+        <button class="btn btn-utama" id="btn-kartu-buat" type="button">Buat/Perbarui Kartu Validasi</button>
+        <span class="status-aksi" id="status-kartu"></span>
+      </div>
+      <div id="galeri-kartu"></div>
+    </section>
+  </main>
+
+</div>
 
 <div id="viewer" class="sembunyi">
   <div id="vw-panggung"><img id="vw-img" alt="Kartu validasi"></div>
-  <button id="vw-tutup" title="Tutup (Esc)">&#10005;</button>
+  <button id="vw-tutup" title="Tutup (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
   <button id="vw-kiri" class="vw-nav" title="Sebelumnya (&larr;)">&#8249;</button>
   <button id="vw-kanan" class="vw-nav" title="Berikutnya (&rarr;)">&#8250;</button>
   <div id="vw-label"></div>
