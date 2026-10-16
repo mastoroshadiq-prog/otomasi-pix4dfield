@@ -157,6 +157,11 @@ async function pindai() {
     chip("disk bebas " + gb(r.disk_bebas_byte), r.cukup_disk ? "" : "warn")
   );
   if (!r.cukup_disk) kotak.append(chip("disk mungkin tidak cukup", "err"));
+  if (r.n_diabaikan) {
+    const c = chip(`${r.n_diabaikan} blok diabaikan — tanpa data`, "warn");
+    c.title = r.diabaikan.map((d) => `${d.kode} (${d.cakupan_persen}%)`).join(", ");
+    kotak.append(c);
+  }
   setBadge("badge-pindai", `${r.n_blok} blok`, "ok");
   $("ringkas-status").textContent = `Pindai: ${r.n_blok} blok · ${r.n_baris} file`;
   sarankan("jalankan");

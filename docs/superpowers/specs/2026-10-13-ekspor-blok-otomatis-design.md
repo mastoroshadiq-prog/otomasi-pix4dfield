@@ -170,3 +170,21 @@ Log: panel live di UI + `run_<tanggal>.log` + `hasil_per_blok.csv` di folder out
 
 - Nama folder output `<...>_auto` — atau usulan pengguna lain?
 - Format nama blok pada path: `FLG03_AMEII-D01` (padat, mengikuti `FLG01_AMEII-D01`) — setuju?
+
+## 12. Lampiran — Mode "Blok Penuh" untuk Kartu Blok (2026-10-15)
+
+**Latar (bukti pada flight DBE I):** peta PDF resmi ternyata hanya memuat 5 sel kecil (65,86 ha) dari area terbang 130,26 ha; posisi sel PDF benar (IoU vs shp 0,865–0,979) tetapi tidak menutupi seluruh areal. Geometri benar = gabungan semua pecahan `No_Block` di `2_Tanam_Inti.shp`: G25A 22,31 ha (6 fragmen), G25B 8,18 (3), G26 29,92 (2), G27 30,04 (2), G28 30,84 (2); sisa 8,97 ha = jaringan jalan (±10,6 m) + tepi.
+
+**Keputusan pengguna:** kartu per blok tampil sebagai satu blok penuh tanpa celah jalan (seamless) — sesuai tampilan Pix4Dfields; celah dibagi ke blok terdekat.
+
+Catatan penamaan: "opsi B" pada §9 merujuk pembacaan cache `img_*.tif` (cadangan); mode ini berbeda — disebut **mode blok penuh**.
+
+**Desain terpasang:**
+
+- `core/blok_geom.py` — `geometri_kartu(bentang, frags, kode)`: union pecahan shp per kode (∩ bentang berdata ortho), lalu sisa celah ditambal ke blok terdekat per langkah buffer r = 1..80 m (pembagian jatuh alami di garis tengah celah). Kode tanpa fragmen → `None` → pemanggil memakai geometri PDF (fallback).
+- `layer_scan.poligon_footprint(topeng)` — poligon area berdata dari topeng 1024 px, margin ke luar 1,5 px-topeng (piksel margin alpha=0 → tidak ikut ter-ekspor).
+- `app._bangun_rows` — bila `shp_kebun` ada: geometri kartu = mode blok penuh; luas blok & estimasi disk dihitung dari geometri baru. Bila tidak ada: perilaku lama (PDF) dipertahankan.
+- `qa_overlay.render_blok_overlay` — baca citra ter-downsample (≤1600 px) agar kartu 100+ MP tidak membebani memori.
+- Guard folder output menerima pola `_auto<angka>` (mis. `_auto2`) untuk sesi ulang.
+
+**Bukti uji:** pytest 94/94 (termasuk 6 tes `blok_geom`, 1 tes `poligon_footprint`, 1 tes overlay kartu besar, 3 tes integrasi API: opsi B, fallback PDF, guard `_auto2`).

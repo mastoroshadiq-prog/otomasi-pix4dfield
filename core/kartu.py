@@ -37,6 +37,9 @@ def _baris_konteks(gsd_cm, residual_m):
 
 
 def muat_shp(path_shp):
+    """Muat semua record shp per No_Block. Satu kode bisa punya BANYAK fragmen
+    (blok utuh + pecahan/bergeser) — jangan saling menimpa; penyaringan
+    dilakukan per poligon PDF oleh pilih_shp."""
     import shapefile
     r = shapefile.Reader(str(path_shp))
     fields = [f[0] for f in r.fields[1:]]
@@ -45,9 +48,24 @@ def muat_shp(path_shp):
         d = dict(zip(fields, rec))
         k = str(d.get("No_Block") or "").strip().upper().replace(" ", "")
         if k:
-            hasil[k] = {"geom": shp_shape(sh.__geo_interface__),
-                        "kode_shp": str(d.get("BLOK_Baru") or "")}
+            hasil.setdefault(k, []).append(
+                {"geom": shp_shape(sh.__geo_interface__),
+                 "kode_shp": str(d.get("BLOK_Baru") or "")})
     return hasil
+
+
+def pilih_shp(g_pdf, kandidat):
+    """Pilih record shp paling cocok utk poligon PDF: IoU terbesar,
+    seri -> titik tengah terdekat."""
+    terbaik, skor = None, None
+    for c in kandidat:
+        g = c["geom"]
+        gabung = g_pdf.union(g).area
+        iou = g_pdf.intersection(g).area / gabung if gabung else 0.0
+        kunci = (iou, -g_pdf.centroid.distance(g.centroid))
+        if skor is None or kunci > skor:
+            terbaik, skor = c, kunci
+    return terbaik
 
 
 def komposit(arr):
@@ -232,8 +250,10 @@ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
     for i, (kode, divisi, f, rgb) in enumerate(dipilih, 1):
         if progress:
             progress(i, len(dipilih), kode)
-        entri = _render_kartu(kode, divisi, shp_shape(f["geometry"]),
-                              shp_map.get(kode.upper().strip()), rgb,
+        g_pdf = shp_shape(f["geometry"])
+        kandidat = shp_map.get(kode.upper().strip())
+        info_shp = pilih_shp(g_pdf, kandidat) if kandidat else None
+        entri = _render_kartu(kode, divisi, g_pdf, info_shp, rgb,
                               dest / f"kartu_{kode}.png", font_b, font_m, font_s,
                               residual_m=residual_m)
         kartu_list.append(entri)

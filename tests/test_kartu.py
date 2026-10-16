@@ -4,11 +4,23 @@ import rasterio
 import shapefile
 from PIL import Image
 from rasterio.transform import from_origin
+from shapely.geometry import shape as shp_shape
 
 from core import kartu
 
 POLY = [[300000.0, 9959400.0], [300200.0, 9959400.0], [300200.0, 9960000.0],
         [300000.0, 9960000.0], [300000.0, 9959400.0]]
+POLY_GESER = [[x + 900.0, y] for x, y in POLY]
+
+
+def _tulis_shp(path, records):
+    w = shapefile.Writer(str(path), shapeType=shapefile.POLYGON)
+    w.field("No_Block", "C")
+    w.field("BLOK_Baru", "C")
+    for poly, no, baru in records:
+        w.poly([poly])
+        w.record(no, baru)
+    w.close()
 
 
 def _buat_raster(path, h=600, w=200):
@@ -106,3 +118,37 @@ def test_kartu_metadata_gsd_dan_residual(tmp_path):
                      path_kalibrasi=str(tmp_path / "tidak_ada.json"))
     k2 = json.loads((idx2_dir / "index.json").read_text(encoding="utf-8"))["kartu"][0]
     assert k2["gsd_cm"] is not None and k2["residual_m"] is None
+
+
+def test_muat_shp_menyimpan_semua_record_duplikat(tmp_path):
+    """BUG nyata: No_Block duplikat di shp (fragmen utuh + fragmen bergeser)
+    dulu saling menimpa (yang terakhir menang) sehingga kartu memakai fragmen salah."""
+    p = tmp_path / "kebun.shp"
+    _tulis_shp(p, [(POLY, "D13", "D013A"), (POLY_GESER, "D13", "D013A")])
+    h = kartu.muat_shp(p)
+    assert set(h) == {"D13"}
+    assert isinstance(h["D13"], list)                # RED bersih sebelum perbaikan
+    assert len(h["D13"]) == 2                        # kedua record tersimpan
+
+
+def test_pilih_shp_ambil_iou_terbaik(tmp_path):
+    kandidat = [{"geom": shp_shape({"type": "Polygon", "coordinates": [POLY_GESER]}),
+                 "kode_shp": "GESER"},
+                {"geom": shp_shape({"type": "Polygon", "coordinates": [POLY]}),
+                 "kode_shp": "BENAR"}]
+    terpilih = kartu.pilih_shp(shp_shape({"type": "Polygon", "coordinates": [POLY]}), kandidat)
+    assert terpilih["kode_shp"] == "BENAR"
+
+
+def test_kartu_pakai_record_shp_terbaik(tmp_path):
+    out = _siapkan_output(tmp_path)
+    gj = _tulis_geojson(tmp_path / "blok.geojson", [{"kode": "D13", "divisi": "AME III"}])
+    shp_p = tmp_path / "kebun.shp"
+    _tulis_shp(shp_p, [(POLY, "D13", "D013A"), (POLY_GESER, "D13", "D013A")])
+    kartu.buat_kartu(str(out), str(gj), "TST01", path_shp=str(shp_p),
+                     dest=str(tmp_path / "kartu"))
+    idx = json.loads((tmp_path / "kartu" / "index.json").read_text(encoding="utf-8"))
+    k = idx["kartu"][0]
+    assert k["iou"] > 99.0                           # bukan 0% dari fragmen bergeser
+    assert k["geser_m"] < 1.0
+    assert abs(k["luas_shp_ha"] - 12.0) < 0.01

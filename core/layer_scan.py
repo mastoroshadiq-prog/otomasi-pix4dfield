@@ -8,6 +8,11 @@ ROLE_LAYER = ("ortho", "ndre", "nir", "rededge", "dsm")
 # 24.708.559.348 B / (38.287.432.957 B / 257,9 ha × 197,63 ha) ≈ 0,84
 RASIO_KOMPRESI_GATE2 = 0.84
 
+# blok dengan cakupan footprint ortho di bawah ini dianggap tanpa data (mis. hanya
+# tersenggol tepi bbox ortho). Bukti: pada flight DBE I, blok tersenggol 0,00–0,01%,
+# blok berdata nyata ≥95,9% — jurang lebar, 25% aman dari keduanya.
+AMBANG_BLOK_BERDATA = 25.0
+
 def baca_meta(path):
     with rasterio.open(path) as ds:
         return {"data": str(path), "bands": ds.count, "dtype": ds.dtypes[0],
@@ -68,19 +73,68 @@ def blok_dalam_cakupan(geojson, bounds):
     b = box(*bounds)
     return [f for f in geojson["features"] if shape(f["geometry"]).intersects(b)]
 
-def luas_footprint_ha(path_data, maks_dim=1024):
-    """Luas area berdata layer (mask band terakhir > 0) dalam ha.
+def topeng_footprint(path_data, maks_dim=1024):
+    """Topeng area berdata layer (mask band terakhir > 0) + grid & luasnya.
 
     Dibaca ter-undersample (sisi terpanjang ≤ maks_dim px) agar murah pada
-    file multi-GB; akurasi ±beberapa persen cukup untuk pra-cek disk.
+    file multi-GB; akurasi ±beberapa persen cukup untuk pra-cek disk/blok.
     """
     with rasterio.open(path_data) as ds:
         f = min(1.0, maks_dim / max(ds.width, ds.height))
         h = max(1, round(ds.height * f))
         w = max(1, round(ds.width * f))
         mask = ds.read(ds.count, out_shape=(h, w)) > 0
-        area_px_m2 = abs(ds.transform.a * ds.transform.e) / (f * f)
-    return float(mask.sum()) * area_px_m2 / 1e4
+        transform = ds.transform @ rasterio.Affine.scale(ds.width / w, ds.height / h)
+        px_m2 = abs(transform.a * transform.e)
+    return {"mask": mask, "transform": transform, "px_m2": px_m2,
+            "h": h, "w": w, "luas_ha": float(mask.sum()) * px_m2 / 1e4}
+
+
+def luas_footprint_ha(path_data, maks_dim=1024):
+    return topeng_footprint(path_data, maks_dim)["luas_ha"]
+
+
+def poligon_footprint(topeng):
+    """Poligon area berdata dari topeng (bahan "bentang" kartu mode blok penuh).
+
+    Diberi margin ke luar 1,5 px-topeng agar tepi flight tidak tergunting
+    tangga piksel; piksel di luar data memang alpha=0 sehingga tak ikut ter-ekspor.
+    """
+    from rasterio.features import shapes
+    from shapely.geometry import shape
+    from shapely.ops import unary_union
+    m = topeng["mask"]
+    if not m.any():
+        return None
+    geoms = [shape(g) for g, v in
+             shapes(m.astype("uint8"), mask=m, transform=topeng["transform"]) if v]
+    if not geoms:
+        return None
+    return unary_union(geoms).buffer(1.5 * topeng["px_m2"] ** 0.5)
+
+
+def saring_blok_berdata(features, topeng, ambang=AMBANG_BLOK_BERDATA):
+    """Pisahkan blok berdata (≥ ambang % luasnya tertutup footprint) vs diabaikan.
+
+    Return (simpan, buang); buang berisi {"kode", "cakupan_persen"} — blok yang
+    hanya tersenggol tepi ortho tanpa piksel berdata nyata (senyap sebelum ini).
+    """
+    from rasterio.features import geometry_mask
+    from shapely.geometry import mapping, shape
+    simpan, buang = [], []
+    for fb in features:
+        geom = shape(fb["geometry"])
+        if geom.area <= 0:
+            cakupan = 0.0
+        else:
+            gm = geometry_mask([mapping(geom)], out_shape=(topeng["h"], topeng["w"]),
+                               transform=topeng["transform"], invert=True)
+            cakupan = float((topeng["mask"] & gm).sum()) * topeng["px_m2"] / geom.area * 100.0
+        if cakupan >= ambang:
+            simpan.append(fb)
+        else:
+            buang.append({"kode": fb["properties"]["kode"], "cakupan_persen": round(cakupan, 2)})
+    return simpan, buang
 
 def estimasi_byte_output(byte_src, luas_blok_ha, luas_footprint_ha,
                          rasio=RASIO_KOMPRESI_GATE2):

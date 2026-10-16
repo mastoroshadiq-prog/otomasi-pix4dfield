@@ -53,3 +53,23 @@ def test_d14_luas_masuk_akal(hasil):
     assert 20.0 <= d14[0]["properties"]["luas_ha"] <= 30.0
     xs = [c[0] for c in d14[0]["geometry"]["coordinates"][0]]
     assert 303380 <= min(xs) <= 303460 and 303620 <= max(xs) <= 303700  # celah D13–D15
+
+
+def test_label_plasma_tidak_diassign_via_kedekatan(hasil):
+    """Label blok plasma (suffix P) berbaris di koridor dashed tanpa sel sendiri.
+    Jalur kedekatan ≤60 pt pernah menempelkan G24P ke sel magenta di DBE I
+    (blok fantom 97% tertutup data — harus eksklusif via containment)."""
+    _, qa = hasil
+    fantom = {"C24P", "D24P", "E24P", "E26P", "E43P", "F24P", "F25P", "F45P",
+              "G24P", "G41P", "H23P", "H24P", "I23P", "I24P", "L41P", "N43PA",
+              "N44P", "O42P", "O43P"}
+    assert fantom.isdisjoint(qa["kode_berlabel"])
+    for k in ("G25A", "G25B", "G26", "G27", "G28"):
+        assert k in qa["kode_berlabel"], f"{k} hilang dari hasil ekstraksi"
+
+
+def test_pola_kode_plasma():
+    for k in ("G24P", "N43PA", "CC2P", "L41P", "H57P"):
+        assert pdf_blok._kode_plasma(k), k
+    for k in ("G25A", "BAN2", "C04A", "D14", "J44B", "K16", "G15"):
+        assert not pdf_blok._kode_plasma(k), k

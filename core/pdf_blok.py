@@ -131,6 +131,14 @@ KODE_RE = re.compile(r'^[A-Za-z]{1,4}-?\d{1,2}[A-Za-z]?\d{0,2}[A-Za-z]?$')
 KATA_BUKAN_BLOK = {"BLOCK", "BATAS", "HA", "LUAS", "SUMATERA", "KALIMANTAN", "BARAT", "TIMUR",
                    "PETA", "INFORMASI", "TANAM", "INTI", "TAHUN", "LEGENDA", "SKALA"}
 
+_KODE_PLASMA = re.compile(r'^[A-Z]{1,4}-?\d{1,2}P[A-Z]?$')
+
+def _kode_plasma(kode: str) -> bool:
+    """Blok plasma ber-suffix P: digambar dashed tanpa isian di koridor batas kebun,
+    sehingga jalur kedekatan ≤60 pt menempelkan labelnya ke sel tetangga yang salah
+    (kasus G24P di DBE I). Label plasma hanya boleh lewat containment."""
+    return bool(_KODE_PLASMA.match(kode))
+
 def _poligon_dari_drawing(d):
     """Rantai item 'l'/'qu' → daftar titik; None bila bukan satu poligon tertutup."""
     pts = []
@@ -213,7 +221,7 @@ def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_p
         if kode is None:
             best = None
             for i, (s, lx, ly) in enumerate(kata):
-                if i in dipakai:
+                if i in dipakai or _kode_plasma(s):
                     continue
                 dist = abs(lx - cx0) + abs(ly - cy0)
                 if dist < 60 and (best is None or dist < best):
@@ -237,6 +245,7 @@ def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_p
           "kode_berlabel": sorted({f["properties"]["kode"] for f in fitur}),
           "n_divisi_terisi": sum(1 for f in fitur if f["properties"]["divisi"]),
           "kode_tanpa_poligon": sorted({s for s, _, _ in kata} - {f["properties"]["kode"] for f in fitur}),
+          "label_plasma": sorted({s for s, _, _ in kata if _kode_plasma(s)}),
           "luas_ha": {"min": luas[0], "median": luas[len(luas) // 2], "max": luas[-1]} if luas else {},
           "kalibrasi_residual_max_m": kal["residual_max_m"]}
     Path(out_qa_json).write_text(json.dumps(qa, indent=2, ensure_ascii=False), encoding="utf-8")

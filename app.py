@@ -1,4 +1,4 @@
-import json, shutil, socket, threading, webbrowser
+import json, re, shutil, socket, threading, webbrowser
 from dataclasses import asdict, fields
 from pathlib import Path
 
@@ -95,18 +95,28 @@ def _bangun_rows():
     hasil = layer_scan.scan_folder(KONFIG.folder_sumber)
     if "ortho" not in hasil["layers"]:
         raise ValueError("Layer Orthomosaic (5-band) tidak ditemukan di folder sumber")
-    blok = layer_scan.blok_dalam_cakupan(gj, hasil["layers"]["ortho"]["bounds"])
-    if not blok:
+    kandidat = layer_scan.blok_dalam_cakupan(gj, hasil["layers"]["ortho"]["bounds"])
+    if not kandidat:
         raise ValueError("Tidak ada blok peta yang beririsan dengan cakupan ortho")
+    topeng = layer_scan.topeng_footprint(hasil["layers"]["ortho"]["data"])
+    blok, diabaikan = layer_scan.saring_blok_berdata(kandidat, topeng)
+    if not blok:
+        raise ValueError(
+            f"Tidak ada blok dengan data ortho ≥{layer_scan.AMBANG_BLOK_BERDATA:.0f}% "
+            f"({len(diabaikan)} blok hanya tersenggol tepi ortho — periksa folder sumber)")
     rows = layer_scan.rencana_output(blok, hasil["layers"], KONFIG.folder_output, KONFIG.kode_flight)
     from shapely.geometry import shape
-    wkt_map = {f["properties"]["kode"]: shape(f["geometry"]).wkt for f in blok}
+    geom_blok = {f["properties"]["kode"]: shape(f["geometry"]) for f in blok}
+    if KONFIG.shp_kebun and Path(KONFIG.shp_kebun).exists():
+        from core import blok_geom
+        frags = blok_geom.frags_dari_shp(KONFIG.shp_kebun)
+        G = blok_geom.geometri_kartu(layer_scan.poligon_footprint(topeng), frags, list(geom_blok))
+        geom_blok = {k: (G[k] if G[k] is not None else geom_blok[k]) for k in geom_blok}
     for r in rows:
-        r["geom"] = wkt_map[r["kode"]]
-    luas_blok = sum(f["properties"]["luas_ha"] for f in blok)
+        r["geom"] = geom_blok[r["kode"]].wkt
+    luas_blok = sum(g.area for g in geom_blok.values()) / 1e4
     ukuran_src = sum(Path(v["data"]).stat().st_size for v in hasil["layers"].values())
-    luas_fp = layer_scan.luas_footprint_ha(hasil["layers"]["ortho"]["data"])
-    estimasi = layer_scan.estimasi_byte_output(ukuran_src, luas_blok, luas_fp)
+    estimasi = layer_scan.estimasi_byte_output(ukuran_src, luas_blok, topeng["luas_ha"])
     kal = None
     kal_path = Path(KONFIG.path_kalibrasi)
     if kal_path.exists():
@@ -116,7 +126,9 @@ def _bangun_rows():
             "ditolak": hasil["ditolak"], "n_blok": len(blok), "estimasi_byte": estimasi,
             "blok": [{"kode": f["properties"]["kode"],
                       "divisi": f["properties"].get("divisi", ""),
-                      "luas_ha": f["properties"].get("luas_ha")} for f in blok],
+                      "luas_ha": round(geom_blok[f["properties"]["kode"]].area / 1e4, 2)}
+                     for f in blok],
+            "n_diabaikan": len(diabaikan), "diabaikan": diabaikan,
             "kalibrasi": kal}
 
 
@@ -192,7 +204,8 @@ def pindai():
                     "ditolak": info["ditolak"], "n_baris": len(info["rows"]),
                     "estimasi_byte": info["estimasi_byte"], "disk_bebas_byte": bebas,
                     "cukup_disk": bebas > info["estimasi_byte"] * 1.2,
-                    "blok": info["blok"], "kalibrasi": info["kalibrasi"]})
+                    "blok": info["blok"], "n_diabaikan": info["n_diabaikan"],
+                    "diabaikan": info["diabaikan"], "kalibrasi": info["kalibrasi"]})
 
 
 @app.post("/api/jalankan")
@@ -203,10 +216,11 @@ def jalankan():
         if RUNNER["obj"] and RUNNER["obj"].snapshot()["aktif"]:
             return jsonify({"ok": False, "error": "Batch sedang berjalan"}), 400
         out = Path(KONFIG.folder_output)
-        if out.exists() and any(out.iterdir()) and not out.name.endswith("_auto"):
+        if out.exists() and any(out.iterdir()) and not re.search(r"_auto\d*$", out.name):
             return jsonify({"ok": False, "error":
-                            "Folder output sudah berisi dan bukan folder baru '_auto' — "
-                            "pilih folder output baru agar arsip lama tidak tertimpa"}), 400
+                            "Folder output sudah berisi dan bukan folder baru pola '_auto' "
+                            "(mis. '_auto2') — pilih folder output baru agar arsip lama "
+                            "tidak tertimpa"}), 400
         st_path = out / "state.json"
         if st_path.exists():
             st = json.loads(st_path.read_text(encoding="utf-8"))

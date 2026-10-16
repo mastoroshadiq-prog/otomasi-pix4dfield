@@ -121,3 +121,41 @@ def test_rencana_output_tanpa_bounds_tetap_pending():
     layers = {"ortho": {"data": "o.tif"}, "ndre": {"data": "n.tif"}}
     rows = layer_scan.rencana_output([_blok()], layers, r"F:\\keluar", "FLG03")
     assert all(r.get("status", "pending") == "pending" for r in rows)
+
+
+# --- Saringan blok berdata: blok dianggap berdata bila ≥25% luasnya tertutup footprint ---
+
+def test_topeng_footprint_grid_dan_luas(tmp_path):
+    p = _ortho(tmp_path / "ortho5.tif", alpha_kanan_nol=True)
+    t = layer_scan.topeng_footprint(p)
+    assert t["mask"].shape == (200, 200)
+    assert abs(t["luas_ha"] - 50.0) < 1.0
+    assert abs(t["px_m2"] - 25.0) < 0.01
+
+
+def test_saring_blok_berdata_ambang_25(tmp_path):
+    """Footprint = separuh kiri (x < 300500): 100%/50% disimpan, 20%/0% dibuang."""
+    p = _ortho(tmp_path / "ortho5.tif", alpha_kanan_nol=True)
+    topeng = layer_scan.topeng_footprint(p)
+    fitur = [_blok("KIRI", x=300000, y=9959500, sisi=400),     # 100% di dalam → simpan
+             _blok("TEPI", x=300250, y=9959500, sisi=500),     # 50% di dalam → simpan
+             _blok("SEMPIT", x=300420, y=9959500, sisi=400),   # 20% → buang
+             _blok("KANAN", x=300600, y=9959500, sisi=300)]    # 0% → buang
+    simpan, buang = layer_scan.saring_blok_berdata(fitur, topeng)
+    assert [f["properties"]["kode"] for f in simpan] == ["KIRI", "TEPI"]
+    assert [b["kode"] for b in buang] == ["SEMPIT", "KANAN"]
+    assert abs(buang[0]["cakupan_persen"] - 20.0) < 0.1
+    assert buang[1]["cakupan_persen"] < 0.1
+
+
+# --- Poligon footprint (bahan "bentang" untuk mode kartu blok penuh / opsi B) ---
+
+def test_poligon_footprint_margin_keluar_kecil(tmp_path):
+    from shapely.geometry import Point
+    p = _ortho(tmp_path / "ortho5.tif", alpha_kanan_nol=True)
+    topeng = layer_scan.topeng_footprint(p)
+    pol = layer_scan.poligon_footprint(topeng)
+    assert pol.area >= 500_000.0            # area berdata 50 ha — tak pernah terpotong
+    assert pol.area < 550_000.0             # margin ke luar tetap tipis
+    assert pol.contains(Point(300506, 9959750))       # 6 m di luar tepi mask (margin 7,5 m)
+    assert not pol.contains(Point(300520, 9959750))   # 20 m → di luar margin
