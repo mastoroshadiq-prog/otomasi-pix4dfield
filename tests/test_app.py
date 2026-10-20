@@ -213,7 +213,7 @@ def test_pindai_fallback_pdf_untuk_kode_tanpa_shp(tmp_path, monkeypatch):
     assert j["ok"] is True and j["n_blok"] == 2
     luas = {b["kode"]: b["luas_ha"] for b in j["blok"]}
     assert abs(luas["D03"] - 16.0) < 0.001      # persis PDF (tak punya fragmen shp)
-    assert 22.0 < luas["D01"] < 26.0            # union shp + tambalan jalan di sekitarnya
+    assert 26.0 < luas["D01"] < 28.0            # 16 ha shp + tambalan jalan s/d batas 120 m (±26,7 ha)
 
 
 # --- T-2 di level API: /api/jalankan ---

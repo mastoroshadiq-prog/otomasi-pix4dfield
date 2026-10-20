@@ -427,6 +427,8 @@ tr.baris-dilewati { background: var(--surface-2); }
 }
 .thumb img:hover { transform: scale(1.02); }
 .thumb div { margin-top: 4px; }
+.thumb-gabungan { width: 100%; max-width: 760px; }
+.thumb-gabungan img { border-color: var(--aksen); }
 
 #viewer { position: fixed; inset: 0; background: rgba(8, 12, 20, .94); z-index: 100; }
 #vw-panggung {

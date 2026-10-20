@@ -31,6 +31,18 @@ def test_sukses_dan_csv(tmp_path):
     csv = (tmp_path / "out" / "hasil_per_blok.csv").read_text(encoding="utf-8")
     assert "B00" in csv and "selesai" in csv
 
+def test_luas_blok_ikut_di_csv_dan_snapshot(tmp_path):
+    """Luas kartu (ha) per blok harus muncul di CSV hasil dan snapshot UI,
+    agar bisa dibandingkan dengan data luas milik kebun."""
+    rows = _baris(tmp_path, 1)
+    rows[0]["luas_ha"] = 25.49
+    r = Runner(rows, tmp_path / "out", tmp_path / "log", crop_fn=_crop_ok)
+    r.run()
+    isi = (tmp_path / "out" / "hasil_per_blok.csv").read_text(encoding="utf-8").splitlines()
+    assert "luas_ha" in isi[0]
+    assert "25.49" in isi[1]
+    assert r.snapshot()["items"][0]["luas_ha"] == 25.49
+
 def test_resume_melewati_selesai(tmp_path):
     rows = _baris(tmp_path)
     calls = []

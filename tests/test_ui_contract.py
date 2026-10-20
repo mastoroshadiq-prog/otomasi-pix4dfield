@@ -6,6 +6,7 @@ AKAR = Path(__file__).resolve().parents[1]
 JS = (AKAR / "static" / "app.js").read_text(encoding="utf-8")
 HTML = (AKAR / "templates" / "index.html").read_text(encoding="utf-8")
 APP = (AKAR / "app.py").read_text(encoding="utf-8")
+CSS = (AKAR / "static" / "style.css").read_text(encoding="utf-8")
 
 
 def test_id_yang_dipakai_js_ada_di_html():
@@ -31,3 +32,9 @@ def test_tahap_nav_punya_panel():
     assert tahap == {"setup", "pindai", "jalankan", "validasi"}
     for t in tahap:
         assert f'id="tahap-{t}"' in HTML, f"panel tahap-{t} tidak ada di index.html"
+
+
+def test_kartu_gabungan_punya_tampilan_khusus_di_galeri():
+    assert 'k.jenis === "gabungan"' in JS
+    assert "thumb-gabungan" in JS
+    assert ".thumb-gabungan" in CSS

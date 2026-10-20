@@ -6,15 +6,31 @@ from PIL import Image, ImageDraw
 MAKS_DIM_OVERLAY = 1600
 
 
-def render_pdf_overlay(pdf_path, fitur_pt, out_png, zoom=0.5):
-    """fitur_pt: list (shapely Polygon dalam pt PDF, kode)."""
+def _gambar_geom(dr, geom, zoom, warna, lebar):
+    for p in (geom.geoms if geom.geom_type == "MultiPolygon" else [geom]):
+        xy = [(x * zoom, y * zoom) for x, y in p.exterior.coords]
+        if len(xy) >= 2:
+            dr.line(xy, fill=warna, width=lebar)
+
+
+def render_pdf_overlay(pdf_path, fitur_pt, out_png, zoom=0.5, fitur_shp_pt=None):
+    """fitur_pt: list (shapely Polygon/MultiPolygon dalam pt PDF, kode).
+
+    fitur_shp_pt (opsional): list (geom pt, kode) batas dari fragmen shp Tanam
+    Inti — digambar biru. Dalam mode ini poligon PDF untuk kode yang batasnya
+    dari shp dilewati, kode tanpa shp digambar oranye (batas dari peta PDF)."""
     doc = pymupdf.open(str(pdf_path))
     pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     dr = ImageDraw.Draw(img)
-    for poly, kode in fitur_pt:
-        xy = [(x * zoom, y * zoom) for x, y in poly.exterior.coords]
-        dr.line(xy, fill=(255, 0, 0), width=2)
+    kode_shp = {k for _, k in fitur_shp_pt} if fitur_shp_pt else set()
+    for geom, _ in (fitur_shp_pt or []):
+        _gambar_geom(dr, geom, zoom, (0, 70, 255), 2)
+    for geom, kode in fitur_pt:
+        if kode in kode_shp:
+            continue
+        warna = (255, 130, 0) if fitur_shp_pt is not None else (255, 0, 0)
+        _gambar_geom(dr, geom, zoom, warna, 3 if fitur_shp_pt is not None else 2)
     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
     img.save(out_png)
 

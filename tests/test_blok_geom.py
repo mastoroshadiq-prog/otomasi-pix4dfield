@@ -41,6 +41,21 @@ def test_union_multi_fragmen_tanpa_tambalan():
     assert abs(g["X"].area - 20_000) < 1
 
 
+def test_kantong_lebih_80m_terklaim_dengan_batas_default():
+    """Celah di 86 m dari fragmen harus ikut terklaim (kasus lubang A12 AME I)."""
+    bentang = box(0, 0, 400, 400)
+    frags = {"D01": [box(0, 0, 100, 400)]}
+    g = blok_geom.geometri_kartu(bentang, frags, ["D01"])
+    assert abs(g["D01"].area - 88_000) < 200     # terklaim sampai x=220 (100 frag + 120 tambal)
+
+
+def test_kantong_lebih_120m_tetap_tak_terklaim():
+    bentang = box(0, 0, 600, 400)
+    frags = {"D01": [box(0, 0, 100, 400)]}
+    g = blok_geom.geometri_kartu(bentang, frags, ["D01"])
+    assert abs(g["D01"].area - 88_000) < 200     # berhenti di x=220, sisa >120 m tak diambil
+
+
 def test_frags_dari_shp_normalisasi_dan_duplikat(tmp_path):
     p = tmp_path / "kebun.shp"
     w = shapefile.Writer(str(p), shapeType=shapefile.POLYGON)

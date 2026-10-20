@@ -97,6 +97,10 @@ def _render_uint8(src, dst, pal, peta_band, chunk):
         if pal is None:
             samp = ds.read(out_shape=(ds.count, min(256, ds.height), min(256, ds.width)))
             vals = np.stack([samp[peta_band[k] - 1] for k in (1, 2, 3)]).astype("float64")
+            if ds.nodata is not None:
+                sah = np.all(samp != ds.nodata, axis=0)
+                if sah.any():
+                    vals = vals[:, sah]
             lo, hi = np.percentile(vals, (2, 98))
         with rasterio.open(dst, "w", **profile) as out:
             for row in range(0, ds.height, chunk):

@@ -114,6 +114,7 @@ def _bangun_rows():
         geom_blok = {k: (G[k] if G[k] is not None else geom_blok[k]) for k in geom_blok}
     for r in rows:
         r["geom"] = geom_blok[r["kode"]].wkt
+        r["luas_ha"] = round(geom_blok[r["kode"]].area / 1e4, 2)
     luas_blok = sum(g.area for g in geom_blok.values()) / 1e4
     ukuran_src = sum(Path(v["data"]).stat().st_size for v in hasil["layers"].values())
     estimasi = layer_scan.estimasi_byte_output(ukuran_src, luas_blok, topeng["luas_ha"])

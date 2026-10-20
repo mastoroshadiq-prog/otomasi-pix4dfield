@@ -103,6 +103,28 @@ def test_crop_uint8_data_tif_dipaksa_deflate(tmp_path):
     assert m.any()
     assert np.array_equal(out[m], asli[m])                # salinan eksak (lossless)
 
+def test_render_ortho_rgb_abaikan_nodata_saat_stretch(tmp_path):
+    """Nodata -10000 tidak boleh masuk hitungan persentil → blok bertepi nodata
+    tidak boleh tersaturasi putih."""
+    t = from_origin(300000, 9960000, 1, 1)
+    rng = np.random.default_rng(13)
+    arr = rng.random((5, 200, 200)).astype("float32") * 0.01
+    arr[:, :30, :] = -10000.0                     # 15% nodata: p2 akan jatuh ke -10000
+    arr[4, 30:, :] = 255.0
+    src = tmp_path / "ortho5.tif"
+    with rasterio.open(src, "w", driver="GTiff", width=200, height=200, count=5,
+                       dtype="float32", crs="EPSG:32749", transform=t,
+                       nodata=-10000.0) as ds:
+        ds.write(arr)
+    dst = tmp_path / "ortho5.rgb.tif"
+    crop_engine.render_ortho_rgb(src, dst, chunk=64)
+    with rasterio.open(dst) as ds:
+        out = ds.read()
+    berdata = out[:, 30:, :]
+    assert np.unique(berdata[0]).size > 20
+    assert berdata.mean() < 200
+
+
 def test_overview_data_tidak_membaurkan_nodata(tmp_path):
     """N-3 (data): GDAL average menghormati nodata → overview tepi footprint bersih."""
     t = from_origin(300000, 9960000, 1, 1)

@@ -17,6 +17,7 @@ class Item:
     src_legend: str | None = None
     nama_base: str = ""
     geom: str = ""
+    luas_ha: float = 0.0
     status: str = "pending"
     error: str = ""
     dur_s: float = 0.0
@@ -217,7 +218,7 @@ class Runner:
     def _tulis_csv(self):
         with self._lock:
             items = [asdict(it) for it in self.items]
-        cols = ["divisi", "kode", "layer", "status", "size", "dur_s", "dst_data", "error"]
+        cols = ["divisi", "kode", "luas_ha", "layer", "status", "size", "dur_s", "dst_data", "error"]
         with open(self.csv_path, "w", newline="", encoding="utf-8") as f:
             wr = csv.DictWriter(f, fieldnames=cols)
             wr.writeheader()

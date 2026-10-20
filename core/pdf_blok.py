@@ -1,4 +1,5 @@
 import json, math, re
+from functools import reduce
 from pathlib import Path
 import numpy as np
 import pymupdf
@@ -165,6 +166,161 @@ def _poligon_dari_drawing(d):
 def _tertutup(pts, tol=1.0):
     return math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) <= tol
 
+MAKS_RING = 16
+
+def _rings_dari_drawing(d):
+    """Item 'l'/'qu' → daftar ring tertutup; None bila struktur tak dikenal atau
+    ada chain tak tertutup. Berbeda dari _poligon_dari_drawing yang berhenti di
+    lompatan antar-segmen: di sini lompatan > 0,5 pt = batas antar-ring, sehingga
+    satu path berisi banyak ring (mis. sel G29: pita + strip dipisah jalan tipis)
+    tetap terbaca."""
+    rings, cur = [], []
+    for it in d["items"]:
+        if it[0] == "l":
+            p1, p2 = it[1], it[2]
+        elif it[0] == "qu":
+            q = it[1]
+            quad = [(q.ul.x, q.ul.y), (q.ur.x, q.ur.y), (q.lr.x, q.lr.y), (q.ll.x, q.ll.y)]
+            for i in range(4):
+                a, b = quad[i], quad[(i + 1) % 4]
+                if cur and (abs(cur[-1][0] - a[0]) > 0.5 or abs(cur[-1][1] - a[1]) > 0.5):
+                    if not _tertutup(cur):
+                        return None
+                    rings.append(cur)
+                    cur = []
+                if not cur:
+                    cur.append(a)
+                cur.append(b)
+            continue
+        else:
+            return None
+        x1, y1, x2, y2 = p1.x, p1.y, p2.x, p2.y
+        if cur and (abs(cur[-1][0] - x1) > 0.5 or abs(cur[-1][1] - y1) > 0.5):
+            if not _tertutup(cur):
+                return None
+            rings.append(cur)
+            cur = []
+        if not cur:
+            cur.append((x1, y1))
+        cur.append((x2, y2))
+    if not cur:
+        return None
+    if not _tertutup(cur):
+        return None
+    rings.append(cur)
+    return rings
+
+def _poly_dari_rings(rings):
+    """Ring tertutup → geometri aturan even-odd (xor): ring di dalam ring lain
+    jadi lubang, ring terpisah digabung. Ring cacat direparasi per-ring; ring
+    <4 titik = goresan artefak, dilewati. None bila tak ada ring yang layak."""
+    from shapely.geometry import Polygon
+    from shapely.validation import make_valid
+    try:
+        polys = []
+        for r in rings:
+            if len(r) < 4:
+                continue
+            p = Polygon(r)
+            if not p.is_valid:
+                rep = make_valid(p)
+                if rep.geom_type == "Polygon":
+                    p = rep
+                else:
+                    parts = [g for g in getattr(rep, "geoms", []) if g.geom_type == "Polygon"]
+                    p = max(parts, key=lambda g: g.area) if parts else None
+            if p is None or p.is_empty or p.area <= 0:
+                continue
+            polys.append(p)
+        if not polys:
+            return None
+        if len(polys) == 1:
+            return polys[0]
+        return reduce(lambda a, b: a.symmetric_difference(b), polys)
+    except Exception:
+        return None
+
+def _peta_geom(geom, fn):
+    """Terapkan fn(x, y) ke semua ring Polygon/MultiPolygon (lubang ikut)."""
+    from shapely.geometry import Polygon, MultiPolygon
+    def cv(ring):
+        return [fn(x, y) for x, y in ring]
+    if geom.geom_type == "Polygon":
+        return Polygon(cv(geom.exterior.coords), [cv(r.coords) for r in geom.interiors])
+    return MultiPolygon([_peta_geom(g, fn) for g in geom.geoms])
+
+def _geom_to_utm(kal, geom):
+    """Geometri pt PDF → UTM; Polygon/MultiPolygon dengan lubang dipertahankan."""
+    return _peta_geom(geom, lambda x, y: pdf_to_utm(kal, x, y))
+
+def buat_invers_pt(kal):
+    """Fungsi UTM → pt PDF (invers affine kalibrasi)."""
+    A = np.array([[kal["affine_E"][0], kal["affine_E"][1]],
+                  [kal["affine_N"][0], kal["affine_N"][1]]])
+    Ainv = np.linalg.inv(A)
+    cE, cN = kal["affine_E"][2], kal["affine_N"][2]
+    def conv(x, y):
+        v = Ainv @ np.array([x - cE, y - cN])
+        return float(v[0]), float(v[1])
+    return conv
+
+def _koord_geojson(geom_utm):
+    """Polygon/MultiPolygon UTM → (tipe, koordinat) geojson: [ring luar, lubang...]."""
+    def rings_of(p):
+        out = [[[round(x, 2), round(y, 2)] for x, y in p.exterior.coords]]
+        out += [[[round(x, 2), round(y, 2)] for x, y in i.coords] for i in p.interiors]
+        return out
+    if geom_utm.geom_type == "MultiPolygon":
+        return "MultiPolygon", [rings_of(g) for g in geom_utm.geoms]
+    return "Polygon", rings_of(geom_utm)
+
+def _koreksi_label_shp(fitur, fitur_pt, fitur_sel, sel, frags):
+    """Label besar (mis. C07B 24 pt) dapat duduk di kotak anotasi yang memuat
+    pusat label, sedangkan sel blok sebenarnya ada ≤1 pt di dekatnya tanpa
+    memuat pusat label. Koreksi hanya bila shp resmi menolak sel saat ini
+    (IoU<50%) dan menerima kandidat yang lebih besar (IoU≥60%, perbaikan ≥25
+    poin). Ambang shp ini mencegah koreksi salah: E36B (sel kecil IoU 82%)
+    tidak tertukar, sedangkan C18B/E20/H08/I28 ikut pulih."""
+    from shapely.geometry import Point
+    from shapely.ops import unary_union
+    n = 0
+    for i, (entri, lx, ly) in enumerate(fitur_sel):
+        kode = fitur[i]["properties"]["kode"]
+        if not frags.get(kode):
+            continue
+        ref = unary_union(frags[kode])
+        if ref.is_empty:
+            continue
+        g_now = entri["poly_utm"]
+        iou_now = g_now.intersection(ref).area / g_now.union(ref).area
+        if iou_now >= 0.5:
+            continue
+        titik = Point(lx, ly)
+        best, best_iou = None, None
+        for lain in sel:
+            if lain["kode"] not in (None, kode):
+                continue
+            if lain["luas_ha"] < entri["luas_ha"] * 1.5:
+                continue
+            if lain["poly_pt"].boundary.distance(titik) > 1.0:
+                continue
+            iou = lain["poly_utm"].intersection(ref).area / lain["poly_utm"].union(ref).area
+            if iou < 0.6 or iou - iou_now < 0.25:
+                continue
+            if best_iou is None or iou > best_iou:
+                best, best_iou = lain, iou
+        if best is None:
+            continue
+        entri["kode"] = None
+        best["kode"] = kode
+        fitur_sel[i] = (best, lx, ly)
+        fitur[i]["properties"]["luas_ha"] = round(best["luas_ha"], 3)
+        tipe, koord = _koord_geojson(best["poly_utm"])
+        fitur[i]["geometry"] = {"type": tipe, "coordinates": koord}
+        fitur_pt[i] = (best["poly_pt"], kode)
+        n += 1
+    return n
+
 def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_path=None):
     from shapely.geometry import Polygon, Point
     from shapely.validation import make_valid
@@ -176,23 +332,47 @@ def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_p
         s = w[4].strip()
         if KODE_RE.match(s) and s.upper() not in KATA_BUKAN_BLOK and not s.isdigit():
             kata.append((s.upper(), (w[0] + w[2]) / 2, (w[1] + w[3]) / 2))
-    x_min, x_max = kal["grid"]["x"][0], kal["grid"]["x"][-1]
-    y_min, y_max = kal["grid"]["y"][0], kal["grid"]["y"][-1]
-    lookup = muat_lookup_shp(shp_path) if shp_path and Path(shp_path).exists() else {}
-    fitur, dipakai, fitur_pt = [], set(), []
+    punya_shp = bool(shp_path) and Path(shp_path).exists()
+    lookup = muat_lookup_shp(shp_path) if punya_shp else {}
+    frags = {}
+    if punya_shp:
+        from core import blok_geom
+        frags = blok_geom.frags_dari_shp(shp_path)
+    fitur, dipakai, fitur_pt, fitur_sel = [], set(), [], []
+    sel = []        # semua kandidat sel (termasuk yang tak kebagian label)
+    tertunda = []   # drawing multi-ring yang kedekatannya ditahan (lihat pass lanjutan)
     n_kandidat = 0
+
+    def _catat(kode, entri, lx, ly):
+        entri["kode"] = kode
+        tipe, koord = _koord_geojson(entri["poly_utm"])
+        fitur.append({"type": "Feature",
+                      "properties": {"kode": kode, "divisi": lookup.get(kode, ""),
+                                     "luas_ha": round(entri["luas_ha"], 3), "sumber": "pdf"},
+                      "geometry": {"type": tipe, "coordinates": koord}})
+        fitur_pt.append((entri["poly_pt"], kode))
+        fitur_sel.append((entri, lx, ly))
     for d in page.get_drawings():
-        pts = _poligon_dari_drawing(d)
-        if not pts:
-            continue
+        # drawing ber-fill lewat jalur ring-split (bisa >1 ring; mis. G29); bila
+        # struktur tak terduga → fallback ke rantai lama. Non-fill tetap jalur lama.
+        rings = _rings_dari_drawing(d) if d.get("fill") else None
+        if rings and len(rings) > MAKS_RING:
+            rings = None  # pola arsir: puluhan/ratusan ring kecil → bukan sel
+        if rings:
+            poly_pt = _poly_dari_rings(rings)
+            if poly_pt is None:
+                continue
+            rep_pts = max(rings, key=lambda r: Polygon(r).area)
+        else:
+            rep_pts = _poligon_dari_drawing(d)
+            if not rep_pts:
+                continue
+            poly_pt = Polygon(rep_pts)
         n_kandidat += 1
-        if d.get("fill") is None and not _tertutup(pts):
+        if d.get("fill") is None and not _tertutup(rep_pts):
             continue
-        cx0 = sum(p[0] for p in pts[:-1]) / (len(pts) - 1)
-        cy0 = sum(p[1] for p in pts[:-1]) / (len(pts) - 1)
-        if not (x_min - 5 <= cx0 <= x_max + 5 and y_min - 5 <= cy0 <= y_max + 5):
-            continue  # legenda / luar area peta
-        poly_pt = Polygon(pts)
+        cx0 = sum(p[0] for p in rep_pts[:-1]) / (len(rep_pts) - 1)
+        cy0 = sum(p[1] for p in rep_pts[:-1]) / (len(rep_pts) - 1)
         if not poly_pt.is_valid:
             # sel blok kadang berpotongan-diri di PDF (mis. jarum 0,3 pt di tepi D14);
             # make_valid bisa kembalikan MultiPolygon/GeometryCollection → ambil poligon terbesar
@@ -206,11 +386,20 @@ def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_p
                 poly_pt = max(parts, key=lambda g: g.area)
         if poly_pt.area <= 0:
             continue
-        poly_utm = Polygon([pdf_to_utm(kal, x, y) for x, y in poly_pt.exterior.coords])
+        if rings:
+            poly_utm = _geom_to_utm(kal, poly_pt)
+        else:
+            poly_utm = Polygon([pdf_to_utm(kal, x, y) for x, y in poly_pt.exterior.coords])
         luas_ha = poly_utm.area / 10000.0
         if not (0.2 <= luas_ha <= 400):
             continue
-        # tautkan label: di dalam poligon dulu, lalu terdekat ≤ 60 pt
+        entri = {"poly_pt": poly_pt, "poly_utm": poly_utm,
+                 "luas_ha": luas_ha, "kode": None}
+        sel.append(entri)
+        # tautkan label: di dalam poligon dulu, lalu terdekat ≤ 60 pt.
+        # Kedekatan ditahan utk drawing multi-ring: sel hasil jalur ring-split bisa
+        # menyerobot label sel tetangga (G03/H06/H25 dulu IoU≈0 vs shp); ia menunggu
+        # di `tertunda` utk pass lanjutan, khusus label yang belum punya poligon.
         kode, idx = None, None
         for i, (s, lx, ly) in enumerate(kata):
             if i in dipakai:
@@ -218,7 +407,8 @@ def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_p
             if poly_pt.contains(Point(lx, ly)):
                 kode, idx = s, i
                 break
-        if kode is None:
+        multi_ring = bool(rings) and len(rings) > 1
+        if kode is None and not multi_ring:
             best = None
             for i, (s, lx, ly) in enumerate(kata):
                 if i in dipakai or _kode_plasma(s):
@@ -229,28 +419,56 @@ def ekstrak_blok(pdf_path, kal, out_geojson, out_qa_json, out_overlay_png, shp_p
             if idx is not None:
                 kode = kata[idx][0]
         if kode is None:
+            if multi_ring:
+                tertunda.append((entri, cx0, cy0))
             continue
         dipakai.add(idx)
-        koord = [[round(x, 2), round(y, 2)] for x, y in poly_utm.exterior.coords]
-        fitur.append({"type": "Feature",
-                      "properties": {"kode": kode, "divisi": lookup.get(kode, ""),
-                                     "luas_ha": round(luas_ha, 3), "sumber": "pdf"},
-                      "geometry": {"type": "Polygon", "coordinates": [koord]}})
-        fitur_pt.append((poly_pt, kode))
+        _catat(kata[idx][0], entri, kata[idx][1], kata[idx][2])
+    # pass lanjutan: drawing multi-ring telantar menautkan label yang masih belum
+    # punya poligon sama sekali (mis. I37B — satu-satunya kandidatnya sel multi-ring)
+    ada = {f["properties"]["kode"] for f in fitur}
+    for entri, cx0, cy0 in tertunda:
+        best, idx = None, None
+        for i, (s, lx, ly) in enumerate(kata):
+            if i in dipakai or s in ada or _kode_plasma(s):
+                continue
+            dist = abs(lx - cx0) + abs(ly - cy0)
+            if dist < 60 and (best is None or dist < best):
+                best, idx = dist, i
+        if idx is None:
+            continue
+        dipakai.add(idx)
+        ada.add(kata[idx][0])
+        _catat(kata[idx][0], entri, kata[idx][1], kata[idx][2])
+    n_koreksi = _koreksi_label_shp(fitur, fitur_pt, fitur_sel, sel, frags) if frags else 0
     gj = {"type": "FeatureCollection", "crs": "EPSG:32749", "features": fitur}
     Path(out_geojson).write_text(json.dumps(gj, ensure_ascii=False), encoding="utf-8")
     luas = sorted(f["properties"]["luas_ha"] for f in fitur)
+    kode_berlabel = sorted({f["properties"]["kode"] for f in fitur})
+    # batas per kode dari fragmen shp Tanam Inti (dipakai crop) → garis biru QA
+    fitur_shp_pt, n_via_shp = [], 0
+    if punya_shp:
+        from shapely.ops import unary_union
+        conv = buat_invers_pt(kal)
+        for k in kode_berlabel:
+            if frags.get(k):
+                fitur_shp_pt.append((_peta_geom(unary_union(frags[k]), conv), k))
+        n_via_shp = len(fitur_shp_pt)
     qa = {"n_poligon_kandidat": n_kandidat,
           "n_berlabel": len(fitur),
-          "kode_berlabel": sorted({f["properties"]["kode"] for f in fitur}),
+          "kode_berlabel": kode_berlabel,
           "n_divisi_terisi": sum(1 for f in fitur if f["properties"]["divisi"]),
           "kode_tanpa_poligon": sorted({s for s, _, _ in kata} - {f["properties"]["kode"] for f in fitur}),
           "label_plasma": sorted({s for s, _, _ in kata if _kode_plasma(s)}),
+          "n_via_shp": n_via_shp,
+          "n_via_pdf": len(kode_berlabel) - n_via_shp,
+          "n_koreksi_label_shp": n_koreksi,
           "luas_ha": {"min": luas[0], "median": luas[len(luas) // 2], "max": luas[-1]} if luas else {},
           "kalibrasi_residual_max_m": kal["residual_max_m"]}
     Path(out_qa_json).write_text(json.dumps(qa, indent=2, ensure_ascii=False), encoding="utf-8")
     from core import qa_overlay
-    qa_overlay.render_pdf_overlay(pdf_path, fitur_pt, out_overlay_png)
+    qa_overlay.render_pdf_overlay(pdf_path, fitur_pt, out_overlay_png,
+                                  fitur_shp_pt=fitur_shp_pt or None)
     return qa
 
 def muat_lookup_shp(shp_path):

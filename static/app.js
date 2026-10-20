@@ -238,7 +238,8 @@ async function polling() {
     const pil = document.createElement("span");
     pil.className = "pil pil-" + (JENIS_PIL[it.status] || "idle");
     pil.textContent = it.status || "";
-    for (const v of [`${it.divisi} ${it.kode}`, it.layer]) {
+    const luas = it.luas_ha ? `${it.luas_ha.toLocaleString("id-ID", { maximumFractionDigits: 2 })} ha` : "";
+    for (const v of [`${it.divisi} ${it.kode}`, luas, it.layer]) {
       const cell = document.createElement("td");
       cell.textContent = v ?? "";
       tr.append(cell);
@@ -292,15 +293,19 @@ async function muatKartu() {
   }
   setBadge("badge-validasi", `${kartuDaftar.length} kartu`, "ok");
   kartuDaftar.forEach((k, i) => {
+    const gabungan = k.jenis === "gabungan";
     const div = document.createElement("div");
-    div.className = "thumb";
+    div.className = "thumb" + (gabungan ? " thumb-gabungan" : "");
     const img = document.createElement("img");
     img.loading = "lazy";
     img.src = urlKartu(k.file);
-    img.alt = "Kartu " + k.kode;
+    img.alt = gabungan ? `Gabungan ${k.n_blok} blok` : "Kartu " + k.kode;
     img.onclick = () => bukaViewer(i);
     const cap = document.createElement("div");
-    cap.textContent = k.kode + (k.iou != null ? ` — IoU ${k.iou.toFixed(1)}%` : "");
+    const luas = k.luas_ekspor_ha ?? k.luas_pdf_ha;
+    cap.textContent = gabungan
+      ? `Gabungan ${k.n_blok} blok — ${luas.toFixed(1)} ha`
+      : k.kode + (k.iou != null ? ` — IoU ${k.iou.toFixed(1)}%` : "");
     div.append(img, cap);
     g.append(div);
   });
@@ -317,9 +322,11 @@ function aturGambar() {
   const img = $("vw-img");
   img.src = urlKartu(k.file);
   terapkanViewer();
-  $("vw-label").textContent =
-    `${kartuIdx + 1}/${kartuDaftar.length} — blok ${k.kode}` +
-    (k.iou != null ? ` (IoU ${k.iou.toFixed(1)}%, geser ${k.geser_m.toFixed(1)} m)` : "");
+  const label = k.jenis === "gabungan"
+    ? `gabungan ${k.n_blok} blok (${(k.luas_ekspor_ha ?? k.luas_pdf_ha).toFixed(1)} ha)`
+    : `blok ${k.kode}` +
+      (k.iou != null ? ` (IoU ${k.iou.toFixed(1)}%, geser ${k.geser_m.toFixed(1)} m)` : "");
+  $("vw-label").textContent = `${kartuIdx + 1}/${kartuDaftar.length} — ${label}`;
 }
 
 function bukaViewer(i) {

@@ -7,7 +7,7 @@ Kode tanpa fragmen shp → None; pemanggil memakai geometri peta PDF apa adanya.
 """
 from shapely.ops import unary_union
 
-MAKS_TAMBAL_M = 80.0
+MAKS_TAMBAL_M = 120.0
 LANGKAH_TAMBAL_M = 1.0
 SISA_BERHENTI_M2 = 4.0
 

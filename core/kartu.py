@@ -1,5 +1,6 @@
-"""Generator kartu validasi per blok: citra hasil crop + batas PDF (merah, dipakai crop)
-vs batas shp kebun (biru), plus inset resolusi asli di titik-titik batas.
+"""Generator kartu validasi per blok: citra hasil crop + batas area ekspor
+(merah), batas peta PDF (oranye, referensi) vs batas shp kebun (biru),
+plus inset resolusi asli di titik-titik batas.
 
 Output: <dest>/kartu_<KODE>.png + <dest>/index.json (metadata untuk UI).
 Default dest: <folder_output>/_validasi.
@@ -9,14 +10,18 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import rasterio
 from PIL import Image, ImageDraw, ImageFont
 from rasterio.windows import Window
+from shapely import wkt
 from shapely.geometry import LineString
 from shapely.geometry import shape as shp_shape
+from shapely.ops import unary_union
 
 WINS, HINS = 430, 300          # ukuran inset (px resolusi asli)
 HSTRIP = 960
+MAKS_PX_GABUNGAN = 2400        # sisi terpanjang kartu gabungan (px)
 FONT_BOLD = "C:/Windows/Fonts/arialbd.ttf"
 FONT_REG = "C:/Windows/Fonts/arial.ttf"
 
@@ -54,18 +59,34 @@ def muat_shp(path_shp):
     return hasil
 
 
-def pilih_shp(g_pdf, kandidat):
-    """Pilih record shp paling cocok utk poligon PDF: IoU terbesar,
-    seri -> titik tengah terdekat."""
-    terbaik, skor = None, None
-    for c in kandidat:
-        g = c["geom"]
-        gabung = g_pdf.union(g).area
-        iou = g_pdf.intersection(g).area / gabung if gabung else 0.0
-        kunci = (iou, -g_pdf.centroid.distance(g.centroid))
-        if skor is None or kunci > skor:
-            terbaik, skor = c, kunci
-    return terbaik
+def shp_terkait(acuan, kandidat):
+    """Gabungkan fragmen shp yang beririsan dengan area ekspor. Fragmen
+    duplikat yang bergeser jauh (tidak beririsan) diabaikan."""
+    frags = [c for c in (kandidat or [])
+             if not c["geom"].is_empty and not acuan.is_empty
+             and acuan.intersection(c["geom"]).area > 0]
+    if not frags:
+        return None, None
+    kode = ",".join(sorted({c["kode_shp"] for c in frags if c["kode_shp"]}))
+    return unary_union([c["geom"] for c in frags]), kode or None
+
+
+def muat_geom_ekspor(output_root):
+    """Geometri blok yang benar-benar diekspor (state.json: kode -> WKT)."""
+    p = Path(output_root) / "state.json"
+    try:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    hasil = {}
+    for kode, w in (st.get("geom_blok") or {}).items():
+        if not isinstance(w, str) or not w.strip():
+            continue
+        try:
+            hasil[str(kode).upper()] = wkt.loads(w)
+        except Exception:
+            continue
+    return hasil
 
 
 def komposit(arr):
@@ -73,6 +94,8 @@ def komposit(arr):
     if arr.shape[0] >= 4:
         a = arr[3:4].transpose(1, 2, 0) / 255.0
         rgb = rgb * a + 255 * (1 - a)
+    else:
+        rgb[np.all(arr[:3] == 0, axis=0)] = 235   # 0 = nodata RGB ekspor 3-band
     return rgb.astype("uint8")
 
 
@@ -113,19 +136,19 @@ def _ke_px(inv, g, off=(0, 0), skala=None):
     return rings
 
 
-def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font_m, font_s,
-                  residual_m=None):
-    g_shp = info_shp["geom"] if info_shp else None
-    iou = g_pdf.intersection(g_shp).area / g_pdf.union(g_shp).area * 100 if g_shp else None
-    geser = g_pdf.centroid.distance(g_shp.centroid) if g_shp else None
+def _render_kartu(kode, divisi, g_pdf, g_ekspor, g_shp, kode_shp, rgb_path, out_png,
+                  font_b, font_m, font_s, residual_m=None):
+    g_utama = g_ekspor if g_ekspor is not None else g_pdf
+    iou = g_utama.intersection(g_pdf).area / g_utama.union(g_pdf).area * 100
+    geser = g_utama.centroid.distance(g_pdf.centroid)
 
-    minx, miny, maxx, maxy = g_pdf.bounds
+    minx, miny, maxx, maxy = g_utama.bounds
     cx = (minx + maxx) / 2
     y25 = maxy - (maxy - miny) * 0.25
     y75 = maxy - (maxy - miny) * 0.75
-    xb25 = titik_timur_barat(g_pdf, y25) or (minx, maxx)
-    xb75 = titik_timur_barat(g_pdf, y75) or (minx, maxx)
-    yns = titik_utara_selatan(g_pdf, cx) or (miny, maxy)
+    xb25 = titik_timur_barat(g_utama, y25) or (minx, maxx)
+    xb75 = titik_timur_barat(g_utama, y75) or (minx, maxx)
+    yns = titik_utara_selatan(g_utama, cx) or (miny, maxy)
     spec = [
         (xb25[0], y25, "1 - tepi barat atas (25%)"),
         (xb25[1], y25, "3 - tepi timur atas (25%)"),
@@ -152,8 +175,10 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
             d = ImageDraw.Draw(img)
             if g_shp:
                 for ring in _ke_px(inv, g_shp, (col, row)):
-                    d.line(ring, fill=(0, 90, 255), width=3)
+                    d.line(ring, fill=(0, 90, 255), width=2)
             for ring in _ke_px(inv, g_pdf, (col, row)):
+                d.line(ring, fill=(255, 140, 0), width=2)
+            for ring in _ke_px(inv, g_utama, (col, row)):
                 d.line(ring, fill=(255, 0, 0), width=3)
             d.rectangle([0, 0, ww - 1, hh - 1], outline=(40, 40, 40), width=2)
             d.text((10, 6), nama, font=font_m, fill=(255, 255, 255),
@@ -164,9 +189,11 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
     dstrip = ImageDraw.Draw(strip_img)
     if g_shp:
         for ring in _ke_px(inv, g_shp, skala=s):
-            dstrip.line(ring, fill=(0, 90, 255), width=3)
+            dstrip.line(ring, fill=(0, 90, 255), width=2)
     for ring in _ke_px(inv, g_pdf, skala=s):
-        dstrip.line(ring, fill=(255, 0, 0), width=3)
+        dstrip.line(ring, fill=(255, 140, 0), width=2)
+    for ring in _ke_px(inv, g_utama, skala=s):
+        dstrip.line(ring, fill=(255, 0, 0), width=4)
     for xb, yb, nama in spec:
         c, r = inv @ (xb, yb)
         px, py = c * s, r * s
@@ -184,32 +211,144 @@ def _render_kartu(kode, divisi, g_pdf, info_shp, rgb_path, out_png, font_b, font
     cv = Image.new("RGB", (Wc, Hc), (248, 248, 248))
     dr = ImageDraw.Draw(cv)
     dr.text((pad, 14), f"Kartu validasi blok {kode} - div {divisi}", font=font_b, fill=(15, 15, 15))
-    dr.text((pad, 46), "merah = batas ekstraksi peta PDF (dipakai crop)  |  "
-                       "biru = batas shp Tanam Inti (No_Block)", font=font_s, fill=(60, 60, 60))
+    dr.text((pad, 46), "merah = area ekspor (crop aktual)  |  oranye = peta PDF "
+                       "(referensi)  |  biru = shp Tanam Inti (No_Block)",
+            font=font_s, fill=(60, 60, 60))
     cv.paste(strip_img, (pad, top))
     gx = pad + strip_img.width + 20
     for i, img in enumerate(insets):
         rr, cc = divmod(i, 2)
         cv.paste(img, (gx + cc * (WINS + 14), top + rr * (HINS + 30)))
+    kaki = f"luas ekspor {g_utama.area/1e4:.2f} ha  |  peta PDF {g_pdf.area/1e4:.2f} ha"
     if g_shp:
-        kaki = (f"luas PDF {g_pdf.area/1e4:.2f} ha vs shp {g_shp.area/1e4:.2f} ha  |  "
-                f"IoU {iou:.1f}%  |  geser titik tengah {geser:.1f} m  |  shp: {info_shp['kode_shp']}")
+        kaki += (f"  |  shp {g_shp.area/1e4:.2f} ha  |  IoU ekspor-PDF {iou:.1f}%"
+                 f"  |  geser titik tengah {geser:.1f} m  |  shp: {kode_shp}")
     else:
-        kaki = (f"luas PDF {g_pdf.area/1e4:.2f} ha  |  "
-                f"shp tidak ditemukan untuk No_Block={kode}")
+        kaki += f"  |  shp tidak ditemukan untuk No_Block={kode}"
     dr.text((pad, Hc - 46), kaki, font=font_m, fill=(20, 20, 20))
     dr.text((pad, Hc - 23), _baris_konteks(gsd_cm, residual_m), font=font_s, fill=(90, 90, 90))
     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
     cv.save(out_png)
 
     return {"kode": kode, "divisi": divisi, "file": Path(out_png).name,
+            "luas_ekspor_ha": round(g_utama.area / 1e4, 2),
             "luas_pdf_ha": round(g_pdf.area / 1e4, 2),
             "luas_shp_ha": round(g_shp.area / 1e4, 2) if g_shp else None,
-            "iou": round(iou, 1) if iou is not None else None,
-            "geser_m": round(geser, 1) if geser is not None else None,
-            "kode_shp": info_shp["kode_shp"] if info_shp else None,
+            "iou": round(iou, 1),
+            "geser_m": round(geser, 1),
+            "kode_shp": kode_shp,
             "gsd_cm": round(gsd_cm, 2),
             "residual_m": residual_m}
+
+
+def _render_gabungan(dipilih, geom_ekspor, shp_map, out_png, font_b, font_m, font_s,
+                     kode_flight, residual_m=None):
+    """Satu kartu besar: RGB blok-blok pada posisi aslinya, dipotong per
+    geometri ekspor, dengan batas + label kode agar mudah dicek menyeluruh."""
+    from rasterio.features import rasterize
+    from rasterio.transform import from_bounds
+    from shapely.geometry import mapping
+
+    def geom_blok(kode, f):
+        return geom_ekspor.get(str(kode).upper()) or shp_shape(f["geometry"])
+
+    def geom_shp(kode, f):
+        g, _ = shp_terkait(geom_blok(kode, f),
+                           (shp_map or {}).get(str(kode).upper().strip()))
+        return g
+
+    geoms = [geom_blok(k, f) for k, _, f, _ in dipilih]
+    geoms_shp = [geom_shp(k, f) for k, _, f, _ in dipilih]
+    minx, miny, maxx, maxy = unary_union(geoms).bounds
+    pad = max(maxx - minx, maxy - miny) * 0.02
+    minx, miny, maxx, maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
+    lebar_m, tinggi_m = maxx - minx, maxy - miny
+    if lebar_m >= tinggi_m:
+        W = MAKS_PX_GABUNGAN
+        H = max(1, round(W * tinggi_m / lebar_m))
+    else:
+        H = MAKS_PX_GABUNGAN
+        W = max(1, round(H * lebar_m / tinggi_m))
+    tr = from_bounds(minx, miny, maxx, maxy, W, H)
+    inv = ~tr
+    kanvas = np.full((H, W, 3), 235, dtype="uint8")
+
+    gsd_cm = None
+    for kode, _divisi, f, rgb in dipilih:
+        geom = geom_blok(kode, f)
+        with rasterio.open(rgb) as ds:
+            if gsd_cm is None:
+                gsd_cm = abs(ds.transform.a) * 100
+            kiri, bawah, kanan, atas = ds.bounds
+            c0, r0 = inv @ (kiri, atas)
+            c1, r1 = inv @ (kanan, bawah)
+        c0 = max(0, min(W - 1, int(round(c0))))
+        r0 = max(0, min(H - 1, int(round(r0))))
+        c1 = max(c0 + 1, min(W, int(round(c1))))
+        r1 = max(r0 + 1, min(H, int(round(r1))))
+        hh, ww = r1 - r0, c1 - c0
+        with rasterio.open(rgb) as ds:
+            img = komposit(ds.read(out_shape=(min(4, ds.count), hh, ww)))
+        m_full = rasterize([(mapping(geom), 1)], out_shape=(H, W), transform=tr,
+                           fill=0, dtype="uint8").astype(bool)
+        m = m_full[r0:r1, c0:c1]
+        sub = kanvas[r0:r1, c0:c1]
+        sub[m] = img[m]
+
+    peta = Image.fromarray(kanvas)
+    dp = ImageDraw.Draw(peta)
+    font_label = _font(26, True)
+    for kode, _divisi, f, _rgb in dipilih:
+        for ring in _ke_px(inv, geom_blok(kode, f)):
+            dp.line(ring, fill=(255, 255, 255), width=6)
+    for kode, _divisi, f, _rgb in dipilih:
+        for ring in _ke_px(inv, geom_blok(kode, f)):
+            dp.line(ring, fill=(220, 30, 30), width=3)
+    for g_shp in geoms_shp:
+        if g_shp is None:
+            continue
+        for ring in _ke_px(inv, g_shp):
+            dp.line(ring, fill=(0, 90, 255), width=3)
+    for kode, _divisi, f, _rgb in dipilih:
+        geom = geom_blok(kode, f)
+        cx, cy = inv @ (geom.centroid.x, geom.centroid.y)
+        kotak = dp.textbbox((0, 0), kode, font=font_label)
+        tw, th = kotak[2] - kotak[0], kotak[3] - kotak[1]
+        dp.rectangle([cx - tw / 2 - 6, cy - th / 2 - 4,
+                      cx + tw / 2 + 6, cy + th / 2 + 4], fill=(15, 15, 15))
+        dp.text((cx - tw / 2, cy - th / 2 - 2), kode, font=font_label,
+                fill=(255, 255, 255))
+    dp.rectangle([0, 0, W - 1, H - 1], outline=(30, 30, 30), width=2)
+
+    top, bottom = 82, 64
+    cv = Image.new("RGB", (W, H + top + bottom), (20, 25, 35))
+    cv.paste(peta, (0, top))
+    dr = ImageDraw.Draw(cv)
+    luas_ekspor = sum(g.area for g in geoms) / 1e4
+    luas_pdf = sum(shp_shape(f["geometry"]).area for _, _, f, _ in dipilih) / 1e4
+    dr.text((16, 12), f"Kartu validasi gabungan — {len(dipilih)} blok",
+            font=font_b, fill=(255, 255, 255))
+    dr.text((16, 48), f"kode flight {kode_flight}  |  merah = batas area ekspor "
+                      "(crop aktual)  |  biru = shp Tanam Inti (resmi)  |  "
+                      "tiap blok tetap punya kartu rinci",
+            font=font_s, fill=(203, 213, 225))
+    dr.text((16, top + H + 10),
+            f"total {len(dipilih)} blok = {luas_ekspor:.2f} ha (ekspor)  |  "
+            f"peta PDF {luas_pdf:.2f} ha  |  GSD {gsd_cm:.2f} cm/px  |  "
+            f"dibuat {datetime.now():%Y-%m-%d %H:%M}",
+            font=font_s, fill=(226, 232, 240))
+    dr.text((16, top + H + 34), _baris_konteks(gsd_cm, residual_m),
+            font=font_s, fill=(148, 163, 184))
+    Path(out_png).parent.mkdir(parents=True, exist_ok=True)
+    cv.save(out_png)
+
+    return {"kode": "GABUNGAN", "jenis": "gabungan", "divisi": None,
+            "file": Path(out_png).name,
+            "luas_ekspor_ha": round(luas_ekspor, 2),
+            "luas_pdf_ha": round(luas_pdf, 2), "luas_shp_ha": None,
+            "iou": None, "geser_m": None, "kode_shp": None,
+            "gsd_cm": round(gsd_cm, 2), "residual_m": residual_m,
+            "n_blok": len(dipilih), "blok": [k for k, _, _, _ in dipilih]}
 
 
 def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
@@ -221,6 +360,7 @@ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
     from core.layer_scan import folder_blok
     gj = json.loads(Path(geojson_path).read_text(encoding="utf-8"))
     shp_map = muat_shp(path_shp) if path_shp and Path(path_shp).exists() else {}
+    geom_ekspor = muat_geom_ekspor(output_root)
     residual_m = None
     if path_kalibrasi and Path(path_kalibrasi).exists():
         kal = json.loads(Path(path_kalibrasi).read_text(encoding="utf-8"))
@@ -246,25 +386,36 @@ def buat_kartu(output_root, geojson_path, kode_flight, path_shp=None,
         dipilih.append((kode, divisi, f, rgb))
 
     dipilih.sort(key=lambda t: (t[1], t[0]))
+    n_total = len(dipilih) + (1 if len(dipilih) >= 2 else 0)
     kartu_list = []
     for i, (kode, divisi, f, rgb) in enumerate(dipilih, 1):
         if progress:
-            progress(i, len(dipilih), kode)
+            progress(i, n_total, kode)
         g_pdf = shp_shape(f["geometry"])
+        g_ekspor = geom_ekspor.get(kode.upper().strip())
         kandidat = shp_map.get(kode.upper().strip())
-        info_shp = pilih_shp(g_pdf, kandidat) if kandidat else None
-        entri = _render_kartu(kode, divisi, g_pdf, info_shp, rgb,
+        g_shp, kode_shp = shp_terkait(g_ekspor or g_pdf, kandidat)
+        entri = _render_kartu(kode, divisi, g_pdf, g_ekspor, g_shp, kode_shp, rgb,
                               dest / f"kartu_{kode}.png", font_b, font_m, font_s,
                               residual_m=residual_m)
         kartu_list.append(entri)
 
+    gabungan = None
+    if len(dipilih) >= 2:
+        if progress:
+            progress(n_total, n_total, "gabungan")
+        gabungan = _render_gabungan(dipilih, geom_ekspor, shp_map,
+                                    dest / "kartu_gabungan.png",
+                                    font_b, font_m, font_s, kode_flight,
+                                    residual_m=residual_m)
+    daftar = ([gabungan] if gabungan else []) + kartu_list
     idx = {"dibuat": datetime.now().isoformat(timespec="seconds"),
            "kode_flight": kode_flight, "sumber_output": str(output_root),
            "shp": str(path_shp) if shp_map else None,
-           "kartu": kartu_list, "dilewati": dilewati}
+           "kartu": daftar, "dilewati": dilewati}
     (dest / "index.json").write_text(json.dumps(idx, indent=1, ensure_ascii=False),
                                      encoding="utf-8")
-    return {"dest": str(dest), "kartu": len(kartu_list), "dilewati": dilewati}
+    return {"dest": str(dest), "kartu": len(daftar), "dilewati": dilewati}
 
 
 def main():
